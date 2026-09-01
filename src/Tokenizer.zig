@@ -4,7 +4,7 @@ const std = @import("std");
 const simd = std.simd;
 const builtin = @import("builtin");
 
-const CPU_ARCH = builtin.cpu.arch;
+const CPU = builtin.cpu;
 
 const U8_VECTOR_LEN = simd.suggestVectorLength(u8);
 
@@ -37,7 +37,7 @@ const CONTROL_CHAR_BITS = block: {
     // Indexes are high bits of control chars
     const highBitFlags = flagsBlock: {
         // 8 unique flags (00000001, 00000010, etc)
-        // That's enough 'cause only ASCII chars with high bits less than 8 used
+        // That's enough 'cause only the ASCII chars with high bits less than 8 are used
         const flagsArray: [8]u8 = undefined;
 
         var flag = 1;
@@ -68,6 +68,21 @@ const CONTROL_CHAR_BITS = block: {
     };
 };
 
+inline fn shuffleVector128(
+    comptime E: type,
+    vector: @Vector(16, E),
+    mask: @Vector(16, u8),
+) @TypeOf(vector) {
+    return switch (CPU.arch) {
+        .x86_64 => asm ("pshufb %[mask], %[vector]" // AT&T syntax
+            : [vector] "+x" (vector),
+            : [mask] "x" (mask),
+        ),
+        else => @compileError("Unsupported arch"),
+        // TODO: add risc-v
+    };
+}
+
 /// Example: for `byte = 0b11110110` returns `0b00000110`
 fn getLowBits(byte: u8) u8 {
     return byte & 0b00001111;
@@ -76,7 +91,6 @@ fn getLowBits(byte: u8) u8 {
 fn getHighBits(byte: u8) u8 {
     return byte >> 4;
 }
-
 /// Fills high bits of each `vector` element to zero and leaves only the low bits.
 fn getLowBitsVector(comptime len: comptime_int, vector: @Vector(len, u8)) @Vector(len, u8) {
     return vector & @as(@TypeOf(vector), @splat(0b00001111));
