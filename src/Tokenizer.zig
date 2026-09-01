@@ -78,6 +78,11 @@ inline fn shuffleVector128(
             : [vector] "+x" (vector),
             : [mask] "x" (mask),
         ),
+        .aarch64 => asm ("tbl %[result].16b, { %[vector] }, %[mask]"
+            : [result] "=w" (-> @Vector(16, u8)),
+            : [vector] "w" (vector),
+              [mask] "w" (mask),
+        ),
         else => @compileError("Unsupported arch"),
         // TODO: add risc-v
     };
