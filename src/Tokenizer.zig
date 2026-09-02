@@ -72,12 +72,15 @@ const CONTROL_CHAR_BITS = block: {
 ///
 /// Permutates elements in `vector` based on `mask` indexes.
 ///
+/// On `x86_64`, uses only 0..4 bits (low bits) of `mask` indexes,
+/// and if the 7 (the last) bit equals `1`, the `result[index]` is set to `0`.
+///
 /// Example:
 /// 1. First iteration - `result[0] = vector[ mask[0] ]`.
 /// 2. Second - `result[1] = vector[ mask[1] ]`.
 /// 3. ...
 ///
-/// The result is a brand-new vector.
+/// Returns the resulting vector.
 inline fn shuffleVector128(
     vector: @Vector(16, u8),
     mask: @Vector(16, u8),
@@ -105,7 +108,7 @@ inline fn shuffleVector128(
 ///
 /// That is, it is like a parallel `shuffleVector128` for two masks and vectors.
 ///
-/// Returns a brand-new 256-bit vector with the result.
+/// Returns the resulting vector.
 ///
 /// Split the result in halves of 128-bits to get the two results.
 inline fn shuffleVector256_x64(
@@ -113,7 +116,24 @@ inline fn shuffleVector256_x64(
     mask: @Vector(32, u8),
 ) @TypeOf(vector) {
     return asm ("vpshufb %[mask], %[vector], %[result]"
-        : [result] "x" (-> @Vector(32, u8)),
+        : [result] "=x" (-> @Vector(32, u8)),
+        : [vector] "x" (vector),
+          [mask] "x" (mask),
+    );
+}
+
+/// Only for `x86_64`.
+///
+/// Like `shuffleVector128`, but uses 0..6 bytes of `mask` indexes,
+/// allowing indexing the whole 512-bit vector.
+///
+/// Returns the resulting vector.
+inline fn shuffleVector512_x64(
+    vector: @Vector(64, u8),
+    mask: @Vector(64, u8),
+) @TypeOf(vector) {
+    return asm ("vpshufb %[mask], %[vector], %[result]"
+        : [result] "=x" (-> @Vector(64, u8)),
         : [vector] "x" (vector),
           [mask] "x" (mask),
     );
