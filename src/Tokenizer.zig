@@ -69,6 +69,29 @@ const CONTROL_CHAR_BITS = block: {
     };
 };
 
+/// The JSON source.
+source: []const u8,
+
+pub const Token = struct {};
+
+pub fn init(source: []const u8) Tokenizer {
+    return .{ .source = source };
+}
+
+pub fn next(self: *Tokenizer) ?Token {
+    const source = self.source;
+    if (U8_VECTOR_LEN) |vectorLen| if (vectorLen < source.len) {
+        const Chunk = @Vector(vectorLen, u8);
+
+        const chunk: Chunk = source[0..Chunk.len].*;
+
+        const chunkLowBits = getLowBitsVector(vectorLen, chunk);
+        const chunkHighBits = getHighBitsVector(vectorLen, chunk);
+
+        self.source = source[Chunk.len..];
+    };
+}
+
 /// Cross-platform.
 ///
 /// Permutates elements in `vector` based on `mask` indexes.
@@ -157,6 +180,16 @@ inline fn getVectorLen_x64() ?comptime_int {
         128
     else
         null;
+}
+
+/// Returns `true` when 128-bit vector-shuffle is supported on `aarch64`.
+inline fn is128BitVector_aarch64() bool {
+    return Target.aarch64.featureSetHas(CPU.features, .neon);
+}
+
+/// Returns `true` when the `aarch64` target supports vectors with variable length (128-512 bit).
+inline fn isVariableVectorLen_aarch64() bool {
+    return Target.aarch64.featureSetHas(CPU.features, .sve2);
 }
 
 /// Fills the high `byte` bits to zeros.
