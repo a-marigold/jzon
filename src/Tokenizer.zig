@@ -68,9 +68,18 @@ const CONTROL_CHAR_BITS = block: {
     };
 };
 
+/// Cross-platform.
+///
+/// Permutates elements in `vector` based on `mask` indexes.
+///
+/// Example:
+/// 1. First iteration - `result[0] = vector[ mask[0] ]`.
+/// 2. Second - `result[1] = vector[ mask[1] ]`.
+/// 3. ...
+///
+/// The result is a brand-new vector.
 inline fn shuffleVector128(
-    comptime E: type,
-    vector: @Vector(16, E),
+    vector: @Vector(16, u8),
     mask: @Vector(16, u8),
 ) @TypeOf(vector) {
     return switch (CPU.arch) {
@@ -88,18 +97,43 @@ inline fn shuffleVector128(
     };
 }
 
-/// Example: for `byte = 0b11110110` returns `0b00000110`
+/// Only for `x86_64`.
+///
+/// `mask` doesn't index all the 256-bit `vector` (as in `shuffleVector128` the `mask` indexes a 128-bit vector).
+/// Instead, 0..128 bits of `mask` index 0..128 bits of `vector`,
+/// and the 128..256 bits of mask index 128..256 bits of `vector`.
+///
+/// That is, it is like a parallel `shuffleVector128` for two masks and vectors.
+///
+/// Returns a brand-new 256-bit vector with the result.
+///
+/// Split the result in halves of 128-bits to get the two results.
+inline fn shuffleVector256_x64(
+    vector: @Vector(32, u8),
+    mask: @Vector(32, u8),
+) @TypeOf(vector) {
+    return asm ("vpshufb %[mask], %[vector], %[result]"
+        : [result] "x" (-> @Vector(32, u8)),
+        : [vector] "x" (vector),
+          [mask] "x" (mask),
+    );
+}
+
+/// Fills the high `byte` bits to zeros.
 fn getLowBits(byte: u8) u8 {
     return byte & 0b00001111;
 }
-/// Example: for `byte = 0b11110110` returns `0b00001111` (high bits are moved to low bits).
+
+/// Moves the high `byte` bits to the low bits, filling the previous place of high bits to zeros.
 fn getHighBits(byte: u8) u8 {
     return byte >> 4;
 }
+
 /// Fills high bits of each `vector` element to zero and leaves only the low bits.
 fn getLowBitsVector(comptime len: comptime_int, vector: @Vector(len, u8)) @Vector(len, u8) {
     return vector & @as(@TypeOf(vector), @splat(0b00001111));
 }
+
 /// Fills low bits to zero and moves the high bits to low bits for each `vector` element.
 fn getHighBitsVector(comptime len: comptime_int, vector: @Vector(len, u8)) @Vector(len, u8) {
     return vector >> @as(@TypeOf(vector), @splat(4));
