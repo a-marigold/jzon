@@ -2,6 +2,7 @@ const Tokenizer = @This();
 
 const std = @import("std");
 const simd = std.simd;
+const Target = std.Target;
 const builtin = @import("builtin");
 
 const CPU = builtin.cpu;
@@ -85,12 +86,13 @@ inline fn shuffleVector128(
     vector: @Vector(16, u8),
     mask: @Vector(16, u8),
 ) @TypeOf(vector) {
+    // TODO: separate it into different functions for arches
     return switch (CPU.arch) {
         .x86_64 => asm ("pshufb %[mask], %[vector]" // AT&T syntax
             : [vector] "+x" (vector),
             : [mask] "x" (mask),
         ),
-        .aarch64 => asm ("tbl %[result].16b, { %[vector] }, %[mask]"
+        .aarch64 => asm ("tbl %[result].16b, { %[vector].16b }, %[mask].16b"
             : [result] "=w" (-> @Vector(16, u8)),
             : [vector] "w" (vector),
               [mask] "w" (mask),
@@ -137,6 +139,24 @@ inline fn shuffleVector512_x64(
         : [vector] "x" (vector),
           [mask] "x" (mask),
     );
+}
+
+/// Returns 128, 256, 512 or `null` in case of lack of SIMD.
+///
+/// Returns 512 only if the target is `avx512bw` (which supports 64-byte vector shuffles).
+/// If the target supports `abx512` but doesn't support the mentioned shuffles, 256 is returned.
+inline fn getVectorLen_x64() ?comptime_int {
+    const features = CPU.features;
+    const hasFeature = Target.x86.featureSetHas;
+
+    return if (hasFeature(features, .avx512bw))
+        512
+    else if (hasFeature(features, .avx2))
+        256
+    else if (hasFeature(features, .ssse3))
+        128
+    else
+        null;
 }
 
 /// Fills the high `byte` bits to zeros.
