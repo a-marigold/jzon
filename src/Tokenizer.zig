@@ -69,35 +69,10 @@ const CONTROL_CHAR_BITS = block: {
     };
 };
 
-/// The JSON source.
-source: []const u8,
-
-pub const Token = struct {};
-
-pub fn init(source: []const u8) Tokenizer {
-    return .{ .source = source };
-}
-
-pub fn next(self: *Tokenizer) ?Token {
-    const source = self.source;
-    if (U8_VECTOR_LEN) |vectorLen| if (vectorLen < source.len) {
-        const Chunk = @Vector(vectorLen, u8);
-
-        const chunk: Chunk = source[0..Chunk.len].*;
-
-        const chunkLowBits = getLowBitsVector(vectorLen, chunk);
-        const chunkHighBits = getHighBitsVector(vectorLen, chunk);
-
-        self.source = source[Chunk.len..];
-    };
-}
-
-/// Cross-platform.
+/// Permutates elements in `vector` based on `mask` elements.
 ///
-/// Permutates elements in `vector` based on `mask` indexes.
-///
-/// On `x86_64`, uses only 0..4 bits (low bits) of `mask` indexes,
-/// and if the 7 (the last) bit equals `1`, the `result[index]` is set to `0`.
+/// Uses only 0..4 bits (low bits) of `mask` indexes,
+/// and if the 7 (the highest) bit equals `1`, the `result[index]` is set to `0`.
 ///
 /// Example:
 /// 1. First iteration - `result[0] = vector[ mask[0] ]`.
@@ -105,27 +80,39 @@ pub fn next(self: *Tokenizer) ?Token {
 /// 3. ...
 ///
 /// Returns the resulting vector.
-inline fn shuffleVector128(
+inline fn shuffleVector128_x64(
     vector: @Vector(16, u8),
     mask: @Vector(16, u8),
 ) @TypeOf(vector) {
-    // TODO: separate it into different functions for arches
-    return switch (CPU.arch) {
-        .x86_64 => asm ("pshufb %[mask], %[vector]" // AT&T syntax
-            : [vector] "+x" (vector),
-            : [mask] "x" (mask),
-        ),
-        .aarch64 => asm ("tbl %[result].16b, { %[vector].16b }, %[mask].16b"
-            : [result] "=w" (-> @Vector(16, u8)),
-            : [vector] "w" (vector),
-              [mask] "w" (mask),
-        ),
-        else => @compileError("Unsupported arch"),
-        // TODO: add risc-v
-    };
+    return asm ("pshufb %[mask], %[vector]" // `vector` is mutated
+        : [vector] "+x" (vector),
+        : [mask] "x" (mask),
+    );
 }
 
-/// Only for `x86_64`.
+/// Permutates elements in `vector` based on `mask` elements.
+///
+/// If an element of `mask` is more than 16 (bytes amount of 128 bits),
+/// `0` is written to the result.
+///
+/// Example:
+/// 1. First iteration - `result[0] = vector[ mask[0] ]`.
+/// 2. Second - `result[1] = vector[ mask[1] ]`.
+/// 3. ...
+///
+/// Returns the resulting vector.
+inline fn shuffleVector128_aarch64(
+    vector: @Vector(16, u8),
+    mask: @Vector(16, u8),
+) @Vector(16, u8) {
+    return asm ("tbl %[result].16b, { %[vector].16b }, %[mask].16b"
+        : [result] "=w" (-> @Vector(16, u8)),
+        : [vector] "w" (vector),
+          [mask] "w" (mask),
+    );
+}
+
+/// Only for `x64`.
 ///
 /// `mask` doesn't index all the 256-bit `vector` (as in `shuffleVector128` the `mask` indexes a 128-bit vector).
 /// Instead, 0..128 bits of `mask` index 0..128 bits of `vector`,
@@ -147,7 +134,7 @@ inline fn shuffleVector256_x64(
     );
 }
 
-/// Only for `x86_64`.
+/// Only for `x64`.
 ///
 /// Like `shuffleVector128`, but uses 0..6 bytes of `mask` indexes,
 /// allowing indexing the whole 512-bit vector.
@@ -181,13 +168,13 @@ inline fn getVectorLen_x64() ?comptime_int {
     else
         null;
 }
-
 /// Returns `true` when 128-bit vector-shuffle is supported on `aarch64`.
 inline fn is128BitVector_aarch64() bool {
     return Target.aarch64.featureSetHas(CPU.features, .neon);
 }
 
-/// Returns `true` when the `aarch64` target supports vectors with variable length (128-512 bit).
+/// Returns `true` only when the `aarch64` target supports vectors with variable length (128-512 bit),
+/// and only when the target supports 32-64 byte shuffles with them.
 inline fn isVariableVectorLen_aarch64() bool {
     return Target.aarch64.featureSetHas(CPU.features, .sve2);
 }
