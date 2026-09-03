@@ -39,6 +39,7 @@ const CONTROL_CHAR_BITS = block: {
     const highBitFlags = flagsBlock: {
         // 8 unique flags (00000001, 00000010, etc)
         // That's enough 'cause only the ASCII chars with high bits less than 8 are used
+
         const flagsArray: [8]u8 = undefined;
 
         var flag = 1;
@@ -69,6 +70,32 @@ const CONTROL_CHAR_BITS = block: {
     };
 };
 
+source: []const u8,
+
+pub fn init(source: []const u8) Tokenizer {
+    return .{ .source = source };
+}
+
+pub fn next(self: *Tokenizer) void {}
+
+/// Returns 128, 256, 512 or `null` in case of lack of SIMD.
+///
+/// Returns 512 only if the target is `avx512bw` (which supports 64-byte vector shuffles).
+/// If the target supports `abx512` but doesn't support the mentioned shuffles, 256 is returned.
+inline fn getVectorLen_x64() ?comptime_int {
+    const features = CPU.features;
+    const hasFeature = Target.x86.featureSetHas;
+
+    return if (hasFeature(features, .avx512bw))
+        512
+    else if (hasFeature(features, .avx2))
+        256
+    else if (hasFeature(features, .ssse3))
+        128
+    else
+        null;
+}
+
 /// Permutates elements in `vector` based on `mask` elements.
 ///
 /// Uses only 0..4 bits (low bits) of `mask` indexes,
@@ -87,6 +114,63 @@ inline fn shuffleVector128_x64(
     return asm ("pshufb %[mask], %[vector]" // `vector` is mutated
         : [vector] "+x" (vector),
         : [mask] "x" (mask),
+    );
+}
+
+/// `mask` doesn't index all the 256-bit `vector`.
+/// Instead, 0..16 elements of `mask` index 0..16 elements of `vector`,
+/// and 16..32 elements of mask index 16..32 elemenets of `vector`.
+///
+/// That is, it is like a parallel `shuffleVector128_x64` for two masks and vectors.
+///
+/// Returns the resulting vector.
+///
+/// Split the result in halves of 128-bits to get the two results.
+inline fn shuffleVector256_x64(
+    vector: @Vector(32, u8),
+    mask: @Vector(32, u8),
+) @TypeOf(vector) {
+    return asm ("vpshufb %[mask], %[vector], %[result]"
+        : [result] "=x" (-> @Vector(32, u8)),
+        : [vector] "x" (vector),
+          [mask] "x" (mask),
+    );
+}
+
+/// Like `shuffleVector128`, but uses 0..6 bits of `mask` elements,
+/// allowing indexing the whole 512-bit vector.
+///
+/// Returns the resulting vector.
+inline fn shuffleVector512_x64(
+    vector: @Vector(64, u8),
+    mask: @Vector(64, u8),
+) @TypeOf(vector) {
+    return asm ("vpshufb %[mask], %[vector], %[result]"
+        : [result] "=x" (-> @Vector(64, u8)),
+        : [vector] "x" (vector),
+          [mask] "x" (mask),
+    );
+}
+
+/// Returns `true` when 128-bit vector-shuffle is supported on `aarch64`.
+inline fn is128BitVector_aarch64() bool {
+    return Target.aarch64.featureSetHas(CPU.features, .neon);
+}
+
+/// More preferred than `is128BitVector_aarch64` result.
+///
+/// Returns `true` only when the `aarch64` target supports vectors with variable length (128-512 bit),
+/// and only when the target supports 32-64 byte shuffles with them.
+inline fn isVariableVectorLen_aarch64() bool {
+    return Target.aarch64.featureSetHas(CPU.features, .sve2);
+}
+
+/// Should be called once per thread.
+///
+/// Returns the amount of bytes one vector register can occupy.
+inline fn getVariableVectorLen_aarch64() usize {
+    return asm ("cntb %[result]"
+        : [result] "=r" (-> usize),
     );
 }
 
@@ -110,73 +194,6 @@ inline fn shuffleVector128_aarch64(
         : [vector] "w" (vector),
           [mask] "w" (mask),
     );
-}
-
-/// Only for `x64`.
-///
-/// `mask` doesn't index all the 256-bit `vector` (as in `shuffleVector128` the `mask` indexes a 128-bit vector).
-/// Instead, 0..128 bits of `mask` index 0..128 bits of `vector`,
-/// and the 128..256 bits of mask index 128..256 bits of `vector`.
-///
-/// That is, it is like a parallel `shuffleVector128` for two masks and vectors.
-///
-/// Returns the resulting vector.
-///
-/// Split the result in halves of 128-bits to get the two results.
-inline fn shuffleVector256_x64(
-    vector: @Vector(32, u8),
-    mask: @Vector(32, u8),
-) @TypeOf(vector) {
-    return asm ("vpshufb %[mask], %[vector], %[result]"
-        : [result] "=x" (-> @Vector(32, u8)),
-        : [vector] "x" (vector),
-          [mask] "x" (mask),
-    );
-}
-
-/// Only for `x64`.
-///
-/// Like `shuffleVector128`, but uses 0..6 bytes of `mask` indexes,
-/// allowing indexing the whole 512-bit vector.
-///
-/// Returns the resulting vector.
-inline fn shuffleVector512_x64(
-    vector: @Vector(64, u8),
-    mask: @Vector(64, u8),
-) @TypeOf(vector) {
-    return asm ("vpshufb %[mask], %[vector], %[result]"
-        : [result] "=x" (-> @Vector(64, u8)),
-        : [vector] "x" (vector),
-          [mask] "x" (mask),
-    );
-}
-
-/// Returns 128, 256, 512 or `null` in case of lack of SIMD.
-///
-/// Returns 512 only if the target is `avx512bw` (which supports 64-byte vector shuffles).
-/// If the target supports `abx512` but doesn't support the mentioned shuffles, 256 is returned.
-inline fn getVectorLen_x64() ?comptime_int {
-    const features = CPU.features;
-    const hasFeature = Target.x86.featureSetHas;
-
-    return if (hasFeature(features, .avx512bw))
-        512
-    else if (hasFeature(features, .avx2))
-        256
-    else if (hasFeature(features, .ssse3))
-        128
-    else
-        null;
-}
-/// Returns `true` when 128-bit vector-shuffle is supported on `aarch64`.
-inline fn is128BitVector_aarch64() bool {
-    return Target.aarch64.featureSetHas(CPU.features, .neon);
-}
-
-/// Returns `true` only when the `aarch64` target supports vectors with variable length (128-512 bit),
-/// and only when the target supports 32-64 byte shuffles with them.
-inline fn isVariableVectorLen_aarch64() bool {
-    return Target.aarch64.featureSetHas(CPU.features, .sve2);
 }
 
 /// Fills the high `byte` bits to zeros.
