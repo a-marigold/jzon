@@ -39,10 +39,9 @@ fn genControlCharTables() struct { lowNibbles: [16]u8, highNibbles: [8]u8 } {
     var lowNibbles: [16]u8 = @splat(0);
     var highNibbles: [8]u8 = @splat(0);
 
-    // Indexes are high bits of control chars
+    // Indexes are high nibbles of control chars
     const highNibbleFlags = flagsBlock: {
-        // 8 unique flags (00000001, 00000010, etc)
-        // That's enough 'cause only the ASCII chars with high bits less than 8 are used
+        // 8 unique flags (00000001, 00000010, ...) for every high nibble
         const flagsArray: [8]u8 = undefined;
 
         var flag = 1;
@@ -77,7 +76,7 @@ fn genControlCharTables() struct { lowNibbles: [16]u8, highNibbles: [8]u8 } {
 ///
 /// Returns 64 only if the target is `avx512bw` (which supports 64-byte vector shuffles).
 /// If the target supports just `avx512`, 32 is returned.
-fn getVectorBytesLen_x64() ?comptime_int {
+fn getVectorLen_x64() ?comptime_int {
     const features = CPU.features;
     const hasFeature = Target.x86.featureSetHas;
 
@@ -157,16 +156,15 @@ fn is128BitVector_aarch64() bool {
 fn isVariableVectorLen_aarch64() bool {
     return Target.aarch64.featureSetHas(CPU.features, .sve2);
 }
-
 /// Calling this function without
-/// checking `isVariableVectorLen_aarch64` can cause `SIGILL`.
+/// checking `isVariableVectorLen_aarch64` can cause an illegal instruction fault.
 ///
-/// Returns the amount of bytes one vector register can occupy.
+/// Returns the length in bytes of one vector registers.
 ///
 /// The result of this function should never be persisted 'cause it varies
 /// accross the CPU threads, and if the OS moves the parser
 /// to another thread during a context switch, the result can change.
-inline fn getVariableVectorBytesLen_aarch64() usize {
+inline fn getVariableVectorLen_aarch64() usize {
     return asm ("cntb %[result]"
         : [result] "=r" (-> usize),
     );
@@ -204,11 +202,25 @@ inline fn getHighNibble(byte: u8) u8 {
 }
 
 /// Fills high bits of each `vector` element to zero and leaves only the low bits.
-inline fn getLowNibblesVector(comptime len: comptime_int, vector: @Vector(len, u8)) @Vector(len, u8) {
+inline fn getLowNibblesVector(
+    comptime len: comptime_int,
+    vector: @Vector(len, u8),
+) @Vector(len, u8) {
     return vector & @as(@TypeOf(vector), @splat(0b00001111));
 }
 
-/// Fills moves the high bits to low bits of each `vector` element.
-inline fn getHighNibblesVector(comptime len: comptime_int, vector: @Vector(len, u8)) @Vector(len, u8) {
+/// Moves high bits of each `vector` element to its low bits.
+inline fn getHighNibblesVector(
+    comptime len: comptime_int,
+    vector: @Vector(len, u8),
+) @Vector(len, u8) {
     return vector >> @as(@TypeOf(vector), @splat(4));
+}
+
+/// Expands `vector` to `newLen` and fills new elements to 0.
+fn expandComptimeVector(
+    comptime vector: anytype,
+    comptime newLen: comptime_int,
+) @Vector(newLen, u8) {
+    return vector ++ @as(@Vector(newLen - vector.len, u8), @splat(0));
 }
