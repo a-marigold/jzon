@@ -8,30 +8,36 @@ const builtin = @import("builtin");
 const CPU = builtin.cpu;
 
 /// The control characters of JSON.
-const CONTROL_CHARS = [_]u8{
-    '[',
-    ']',
-    '{',
-    '}',
-    ':',
-    '.',
-    ',',
-    '"',
-    '"',
-};
+const CONTROL_CHARS = [_]u8{ '[', ']', '{', '}', ':', ',' };
 
-/// Contains `LOW` and `HIGH` constant-arrays,
+const Token = struct {};
+
+source: []const u8,
+pub fn init(source: []const u8) Tokenizer {
+    return .{ .source = source };
+}
+
+/// Returns `lowNibbles` and `highNibbles` constant-arrays,
 /// indexes of which are low or high nibbles of `CONTROL_CHARS` elements,
-/// and the values of indexes are unique masks.
+/// and the values at indexes are unique masks.
+///
+/// - `lowNibbles` have 16 elements 'cause the maximum
+/// low nibble of ASCII is `0xF` (decimal `16`).
+///
+/// - `highNibbles` have 8 elements 'cause the maximum
+/// high nibble of ASCII is `0x7` (decimal `7`).
+///
+/// - E.g, char `{` is `0x7B` (decimal 123), and the low nibble `0xB`
+/// perfectly fits `0xF`, and the high `0x7` perfectly fits `0x7`.
 ///
 /// Used as a lookup-table vector, from which the vector-shuffle intruction
 /// builds a new vector for searching control characters (see `next` function).
 ///
 /// Not used when the cpu target doesn't support SIMD.
-const CONTROL_CHAR_NIBBLES = block: {
+fn genControlCharTables() struct { lowNibbles: [16]u8, highNibbles: [8]u8 } {
     // Fill with `0` to ensure there are falsy bits at indexes of non-control chars
-    var low: [16]u8 = @splat(0);
-    var high: [16]u8 = @splat(0);
+    var lowNibbles: [16]u8 = @splat(0);
+    var highNibbles: [8]u8 = @splat(0);
 
     // Indexes are high bits of control chars
     const highNibbleFlags = flagsBlock: {
@@ -50,36 +56,28 @@ const CONTROL_CHAR_NIBBLES = block: {
     };
 
     for (CONTROL_CHARS) |char| {
-        const lowCharBits = getLowNibble(char);
-        const highCharBits = getHighNibble(char);
+        const lowCharNibble = getLowNibble(char);
+        const highCharNibble = getHighNibble(char);
 
-        if (highCharBits > highNibbleFlags.len) @compileError("Control char is out of ASCII");
+        if (highCharNibble > highNibbleFlags.len) @compileError("Control char is out of ASCII");
 
-        const flag = highNibbleFlags[highCharBits];
+        const flag = highNibbleFlags[highCharNibble];
 
-        low[lowCharBits] |= flag;
-        high[highCharBits] |= flag;
+        lowNibbles[lowCharNibble] |= flag;
+        highNibbles[highCharNibble] |= flag;
     }
 
-    break :block struct {
-        pub const LOW = low;
-        pub const HIGH = high;
+    return .{
+        .lowNibbles = lowNibbles,
+        .highNibbles = highNibbles,
     };
-};
-
-const Token = struct {};
-
-source: []const u8,
-
-pub fn init(source: []const u8) Tokenizer {
-    return .{ .source = source };
 }
 
 /// Returns 16, 32, 64 or `null` in case of lack of SIMD.
 ///
 /// Returns 64 only if the target is `avx512bw` (which supports 64-byte vector shuffles).
 /// If the target supports just `avx512`, 32 is returned.
-inline fn getVectorBytesLen_x64() ?comptime_int {
+fn getVectorBytesLen_x64() ?comptime_int {
     const features = CPU.features;
     const hasFeature = Target.x86.featureSetHas;
 
@@ -149,14 +147,14 @@ inline fn shuffleVector512_x64(
 }
 
 /// Returns `true` when 128-bit vector-shuffle is supported on `aarch64`.
-inline fn is128BitVector_aarch64() bool {
+fn is128BitVector_aarch64() bool {
     return Target.aarch64.featureSetHas(CPU.features, .neon);
 }
 /// More preferred than `is128BitVector_aarch64` result.
 ///
 /// Returns `true` only when the `aarch64` target supports vectors with variable length (128-512 bit),
 /// and only when the target supports 32-64 byte shuffles with them.
-inline fn isVariableVectorLen_aarch64() bool {
+fn isVariableVectorLen_aarch64() bool {
     return Target.aarch64.featureSetHas(CPU.features, .sve2);
 }
 
@@ -197,20 +195,20 @@ inline fn shuffleVector128_aarch64(
 }
 
 /// Fills the high `byte` bits to zeros, leaving only the low nibble.
-fn getLowNibble(byte: u8) u8 {
+inline fn getLowNibble(byte: u8) u8 {
     return byte & 0b00001111;
 }
 /// Moves the high `byte` bits to the low bits, filling the previous place of high bits to zeros.
-fn getHighNibble(byte: u8) u8 {
+inline fn getHighNibble(byte: u8) u8 {
     return byte >> 4;
 }
 
 /// Fills high bits of each `vector` element to zero and leaves only the low bits.
-fn getLowNibblesVector(comptime len: comptime_int, vector: @Vector(len, u8)) @Vector(len, u8) {
+inline fn getLowNibblesVector(comptime len: comptime_int, vector: @Vector(len, u8)) @Vector(len, u8) {
     return vector & @as(@TypeOf(vector), @splat(0b00001111));
 }
 
 /// Fills moves the high bits to low bits of each `vector` element.
-fn getHighNibblesVector(comptime len: comptime_int, vector: @Vector(len, u8)) @Vector(len, u8) {
+inline fn getHighNibblesVector(comptime len: comptime_int, vector: @Vector(len, u8)) @Vector(len, u8) {
     return vector >> @as(@TypeOf(vector), @splat(4));
 }
