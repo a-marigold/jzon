@@ -34,11 +34,10 @@ pub fn next(self: *Tokenizer) ?usize {
 
     simd: switch (comptime CPU.arch) {
         .x86_64 => switch (comptime getVectorLen_x64()) {
-            // TODO: merge 16, 64, variants
-
             null => break :simd,
 
-            64 => {
+            // 128- (16 byte) and 512- (64 byte) bit variations have quite the same 'shuffle' instructions
+            16, 64 => |vectorLen| {
                 const prevControlCharsMask = self.controlCharsMask;
                 if (prevControlCharsMask != 0) {
                     const charIndex = @ctz(prevControlCharsMask);
@@ -46,7 +45,7 @@ pub fn next(self: *Tokenizer) ?usize {
                     return charIndex;
                 }
 
-                const Chunk = @Vector(64, u8);
+                const Chunk = @Vector(vectorLen, u8);
 
                 if (Chunk.len > source.len) break :simd;
 
@@ -70,13 +69,13 @@ pub fn next(self: *Tokenizer) ?usize {
                 const chunk: Chunk = source[0..Chunk.len].*;
 
                 const backslashesMask: u64 =
-                    @bitCast(chunk == @as(@Vector(64, u8), @splat('\\')));
+                    @bitCast(chunk == @as(@Vector(Chunk.len, u8), @splat('\\')));
 
                 const stringsMask: u64 = block: {
                     const escapedCharsMask = getEscapedCharsMask(backslashesMask);
 
                     const quotesMask: u64 =
-                        @bitCast(chunk == @as(@Vector(64, u8), @splat('"')));
+                        @bitCast(chunk == @as(@Vector(Chunk.len, u8), @splat('"')));
 
                     // The real, non-escaped quotes os strings
                     const stringQuotesMask = quotesMask & ~escapedCharsMask;
@@ -86,17 +85,16 @@ pub fn next(self: *Tokenizer) ?usize {
                 };
 
                 const chunkAnyControlCharsMask: u64 = block: {
-                    const chunkLowNibbles = getLowNibblesVector(64, chunk);
-                    const chunkHighNibbles = getHighNibblesVector(64, chunk);
+                    const chunkLowNibbles = getLowNibblesVector(Chunk.len, chunk);
+                    const chunkHighNibbles = getHighNibblesVector(Chunk.len, chunk);
 
-                    const chunkLowNibblesMatch = shuffleVector512_x64(
-                        controlCharLowNibbleTable,
-                        chunkLowNibbles,
-                    );
-                    const chunkHighNibblesMatch = shuffleVector512_x64(
-                        controlCharHighNibbleTable,
-                        chunkHighNibbles,
-                    );
+                    const shuffleVectorFn = comptime switch (vectorLen) {
+                        64 => shuffleVector512_x64,
+                        16 => shuffleVector128_x64,
+                    };
+
+                    const chunkLowNibblesMatch = shuffleVectorFn(controlCharLowNibbleTable, chunkLowNibbles);
+                    const chunkHighNibblesMatch = shuffleVectorFn(controlCharHighNibbleTable, chunkHighNibbles);
 
                     break :block @bitCast((chunkLowNibblesMatch & chunkHighNibblesMatch) != 0);
                 };
@@ -111,7 +109,6 @@ pub fn next(self: *Tokenizer) ?usize {
                 // TODO: call `next` recursively or return something
             },
             32 => {},
-            16 => {},
             else => unreachable,
         },
     }
