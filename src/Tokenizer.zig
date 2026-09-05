@@ -18,70 +18,6 @@ pub fn init(source: []const u8) Tokenizer {
     return .{ .source = source };
 }
 
-pub fn next(self: *Tokenizer) Token {
-    const source = self.source;
-
-    simd: switch (CPU.arch) {
-        .x86_64 => switch (comptime getVectorLen_x64()) {
-            // TODO: merge 16, 64, variants
-            null => break :simd,
-
-            64 => {
-                const Chunk = @Vector(64, u8);
-
-                if (Chunk.len > source.len) break :simd;
-
-                // TODO: check if LLVM doesn't move tables initialization from loop in ASM output
-
-                const controlCharTables = comptime genControlCharTables();
-
-                const controlCharLowNibbleTable = comptime block: {
-                    const tableArray = controlCharTables.lowNibbles;
-
-                    const tableVector: @Vector(tableArray.len, u8) = tableArray;
-                    break :block expandComptimeVector(tableVector, Chunk.len);
-                };
-                const controlCharHighNibbleTable = comptime block: {
-                    const tableArray = controlCharTables.highNibbles;
-
-                    const tableVector: @Vector(tableArray.len, u8) = tableArray;
-                    break :block expandComptimeVector(tableVector, Chunk.len);
-                };
-
-                const chunk: Chunk = source[0..Chunk.len].*;
-
-                const backslashesMask: u64 =
-                    @bitCast(chunk == @as(@Vector(64, u8), @splat('\\')));
-
-                const stringsMask = block: {
-                    const escapedCharsMask = getEscapedCharsMask(backslashesMask);
-
-                    const quotesMask: u64 =
-                        @bitCast(chunk == @as(@Vector(64, u8), @splat('"')));
-
-                    break :block quotesMask & escapedCharsMask;
-                };
-
-                const chunkLowNibbles = getLowNibblesVector(64, chunk);
-                const chunkHighNibbles = getHighNibblesVector(64, chunk);
-
-                const chunkLowNibblesMatch = shuffleVector512_x64(
-                    controlCharLowNibbleTable,
-                    chunkLowNibbles,
-                );
-
-                const chunkHighNibblesMatch = shuffleVector512_x64(
-                    controlCharHighNibbleTable,
-                    chunkHighNibbles,
-                );
-            },
-            32 => {},
-            16 => {},
-            else => unreachable,
-        },
-    }
-}
-
 /// Returns `lowNibbles` and `highNibbles` constant-arrays,
 /// indexes of which are low or high nibbles of `CONTROL_CHARS` elements,
 /// and the values at indexes are unique masks.
@@ -133,8 +69,6 @@ fn genControlCharTables() struct { lowNibbles: [16]u8, highNibbles: [8]u8 } {
         .highNibbles = highNibbles,
     };
 }
-
-// TODO: 1
 
 /// For each sequence of `1` bits in an unsigned integer `mask`,
 /// leaves only the first least significant bit of the sequence.
@@ -227,6 +161,38 @@ inline fn getEscapedCharsMask(backslashesMask: anytype) @TypeOf(backslashesMask)
     };
 
     return evenEscapedCharsMask | oddEscapedCharsMask;
+}
+
+/// Carryless multiplication.
+inline fn mulCarryless(a: anytype, b: @TypeOf(a)) @TypeOf(a) {
+    switch (CPU.arch) {
+        .x86_64 => if (Target.x86.featureSetHas(CPU.features, .pclmul)) {
+            const aVector: @Vector(2, u64) = .{ a, 0 };
+            const bVector: @Vector(2, u64) = .{ b, 0 };
+
+            const resultVector = asm (
+                // `0x00` means the least significant bits of vectors are multiplied
+                    "pclmulqdq $0x00, %[a], %[b]" // `b` is mutated
+                    : [b] "+x" (bVector),
+                    : [a] "x" (aVector),
+                );
+            return resultVector[0];
+        },
+        .aarch64 => if (Target.aarch64.featureSetHas(CPU.features, .neon)) {
+            const aVector: @Vector(2, u64) = .{ a, 0 };
+            const bVector: @Vector(2, u64) = .{ b, 0 };
+
+            const resultVector = asm ("pmull %[result].1q, %[a].1d, %[b].1d"
+                : [result] "=w" (-> @Vector(2, u64)),
+                : [a] "w" (aVector),
+                  [b] "w" (bVector),
+            );
+            return resultVector[0];
+        },
+
+        // TODO: a software realization if it turns out to be needed
+        else => @compileError("Unsupported architecture"),
+    }
 }
 
 /// Checks if `T` is unsigned.
@@ -362,16 +328,16 @@ inline fn shuffleVector128_aarch64(
     );
 }
 
-/// Fills the high `byte` bits to zeros, leaving only the low nibble.
+/// Fills the high `byte` bits with 0, leaving only the low nibble.
 inline fn getLowNibble(byte: u8) u8 {
     return byte & 0b00001111;
 }
-/// Moves the high `byte` bits to the low bits, filling the previous place of high bits to zeros.
+/// Moves the high `byte` bits to the low bits, filling the previous place of high bits with 0.
 inline fn getHighNibble(byte: u8) u8 {
     return byte >> 4;
 }
 
-/// Fills high bits of each `vector` element to zero and leaves only the low bits.
+/// Fills high bits of each `vector` element with 0 and leaves only the low bits.
 inline fn getLowNibblesVector(
     comptime len: comptime_int,
     vector: @Vector(len, u8),
@@ -387,7 +353,7 @@ inline fn getHighNibblesVector(
     return vector >> @as(@TypeOf(vector), @splat(4));
 }
 
-/// Expands `vector` to `newLen` and fills new elements to 0.
+/// Expands `vector` to `newLen` and fills new elements with 0.
 fn expandComptimeVector(
     comptime vector: anytype,
     comptime newLen: comptime_int,
