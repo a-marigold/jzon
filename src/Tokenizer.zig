@@ -18,6 +18,70 @@ pub fn init(source: []const u8) Tokenizer {
     return .{ .source = source };
 }
 
+pub fn next(self: *Tokenizer) Token {
+    const source = self.source;
+
+    simd: switch (CPU.arch) {
+        .x86_64 => switch (comptime getVectorLen_x64()) {
+            // TODO: merge 16, 64, variants
+            null => break :simd,
+
+            64 => {
+                const Chunk = @Vector(64, u8);
+
+                if (Chunk.len > source.len) break :simd;
+
+                // TODO: check if LLVM doesn't move tables initialization from loop in ASM output
+
+                const controlCharTables = comptime genControlCharTables();
+
+                const controlCharLowNibbleTable = comptime block: {
+                    const tableArray = controlCharTables.lowNibbles;
+
+                    const tableVector: @Vector(tableArray.len, u8) = tableArray;
+                    break :block expandComptimeVector(tableVector, Chunk.len);
+                };
+                const controlCharHighNibbleTable = comptime block: {
+                    const tableArray = controlCharTables.highNibbles;
+
+                    const tableVector: @Vector(tableArray.len, u8) = tableArray;
+                    break :block expandComptimeVector(tableVector, Chunk.len);
+                };
+
+                const chunk: Chunk = source[0..Chunk.len].*;
+
+                const backslashesMask: u64 =
+                    @bitCast(chunk == @as(@Vector(64, u8), @splat('\\')));
+
+                const stringsMask = block: {
+                    const escapedCharsMask = getEscapedCharsMask(backslashesMask);
+
+                    const quotesMask: u64 =
+                        @bitCast(chunk == @as(@Vector(64, u8), @splat('"')));
+
+                    break :block quotesMask & escapedCharsMask;
+                };
+
+                const chunkLowNibbles = getLowNibblesVector(64, chunk);
+                const chunkHighNibbles = getHighNibblesVector(64, chunk);
+
+                const chunkLowNibblesMatch = shuffleVector512_x64(
+                    controlCharLowNibbleTable,
+                    chunkLowNibbles,
+                );
+
+                const chunkHighNibblesMatch = shuffleVector512_x64(
+                    controlCharHighNibbleTable,
+                    chunkHighNibbles,
+                );
+            },
+            32 => {},
+            16 => {},
+            else => unreachable,
+        },
+    }
+}
+
 /// Returns `lowNibbles` and `highNibbles` constant-arrays,
 /// indexes of which are low or high nibbles of `CONTROL_CHARS` elements,
 /// and the values at indexes are unique masks.
@@ -70,6 +134,8 @@ fn genControlCharTables() struct { lowNibbles: [16]u8, highNibbles: [8]u8 } {
     };
 }
 
+// TODO: 1
+
 /// For each sequence of `1` bits in an unsigned integer `mask`,
 /// leaves only the first least significant bit of the sequence.
 ///
@@ -105,6 +171,73 @@ inline fn getEndsOfMaskSequences(mask: anytype, startsMask: @TypeOf(mask)) @Type
     // Addition carries `startsMask` bits to the left, forming ends of sequences:
     // `00000100` + `00111000` = `01000000`
     return startsMask + mask;
+}
+
+/// Returns a mask, where 1 are only at bit indexes of escaped chars.
+///
+/// Ignores even backslash sequences (when a backslash escapes another backslash).
+///
+/// That is, if JSON input is `"\\key": "\\\\"`, this function
+/// understands that nothing significant but only backslashes are escaped,
+/// and returns `0`.
+///
+/// For detailed explanation of this function, see https://arxiv.org/html/1902.08318v7#S3.
+inline fn getEscapedCharsMask(backslashesMask: anytype) @TypeOf(backslashesMask) {
+    comptime checkIsUint(@TypeOf(backslashesMask));
+
+    const evenBitsMask = comptime genEvenBitsMask(@TypeOf(backslashesMask));
+    const oddBitsMask = comptime ~evenBitsMask;
+
+    const backslashesStarts = getStartsOfMaskSequences(backslashesMask);
+
+    // Mask of backslash sequences starting with an even bit index,
+    // containing only odd amounts of backslashes
+    const evenEscapedCharsMask = block: {
+        // Leave only backslashes starting at even indexes
+        const evenBackslashesStarts = backslashesStarts & evenBitsMask;
+
+        // Contains ends of backslash sequences, starting with an even bit index,
+        // and the ends are shifted to the left by 1
+        const evenBackslashesEnds = getEndsOfMaskSequences(
+            backslashesMask,
+            evenBackslashesStarts,
+        );
+
+        // If a backslash sequence starts with an even bit index (`evenBackslashesStarts`),
+        // it has an odd amount of backslashes ONLY if it ends at an odd bit index,
+        // and `evenBackslashesEnds & oddBitsMask` perfectly checks it
+        break :block evenBackslashesEnds & oddBitsMask;
+    };
+
+    const oddEscapedCharsMask = block: {
+        // Leave only backslashes starting at odd indexes
+        const oddBackslashesStarts = backslashesStarts & oddBitsMask;
+
+        // Contains ends of backslash sequences, starting with an even bit index,
+        // and the ends are shifted to the left by 1
+        const oddBackslashesEnds = getEndsOfMaskSequences(
+            backslashesMask,
+            oddBackslashesStarts,
+        );
+
+        // If a backslash sequence starts with an odd bit index (`oddBackslashesStarts`),
+        // it has an odd amount of backslashes ONLY if it ends at an even bit index,
+        // and the bitwise AND below perfectly checks it
+        break :block oddBackslashesEnds & evenBitsMask;
+    };
+
+    return evenEscapedCharsMask | oddEscapedCharsMask;
+}
+
+/// Checks if `T` is unsigned.
+///
+/// Returns a comptime mask of type `T`, where every bit at even index is `1`.
+fn genEvenBitsMask(comptime T: type) T {
+    comptime checkIsUint(T);
+
+    const maxTValue = math.maxInt(T);
+
+    return maxTValue / 3;
 }
 
 /// Returns 16, 32, 64 or `null` in case of lack of SIMD.
