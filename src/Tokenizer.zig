@@ -163,6 +163,26 @@ inline fn getEscapedCharsMask(backslashesMask: anytype) @TypeOf(backslashesMask)
     return evenEscapedCharsMask | oddEscapedCharsMask;
 }
 
+/// Does prefix XOR for bits in `mask`.
+///
+/// Example:
+/// For `01001000` returns `01111000`.
+///
+/// (Left bits: most significant, Right bits: least significant).
+///
+/// It is the same as `for(.{0,0,0,1,0,0,1,0}, 0..) |el, i| result[i] ^= el;`.
+inline fn getMaskPrefixXor(mask: anytype) @TypeOf(mask) {
+    comptime checkIsUint(@TypeOf(mask));
+
+    // Carryless multiplying by a constant value of N bits, where every bit is `1`,
+    // shifts `mask` N times and does XOR between shifting results,
+    // which is a prefix XOR at hardware level
+    return mulCarryless(
+        mask,
+        math.maxInt(@TypeOf(mask)),
+    );
+}
+
 /// Carryless multiplication.
 inline fn mulCarryless(a: anytype, b: @TypeOf(a)) @TypeOf(a) {
     switch (CPU.arch) {
