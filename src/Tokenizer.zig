@@ -35,6 +35,7 @@ pub fn next(self: *Tokenizer) ?usize {
     simd: switch (comptime CPU.arch) {
         .x86_64 => switch (comptime getVectorLen_x64()) {
             // TODO: merge 16, 64, variants
+
             null => break :simd,
 
             64 => {
