@@ -11,11 +11,109 @@ const CPU = builtin.cpu;
 /// The control characters of JSON.
 const CONTROL_CHARS = [_]u8{ '[', ']', '{', '}', ':', ',' };
 
-const Token = struct {};
-
+/// Doesn't containg the full source.
+/// Instead, it starts with the end of the previously handled part.
 source: []const u8,
+/// Mask, representing positions of control chars in `source`.
+///
+/// Bits of it which set to 1 only if they contain a control char.
+///
+/// To find the `source` index of a bit from this mask, `@ctz` is used.
+///
+/// Reseted to 0 when control chars of the SIMD chunk are out.
+controlCharsMask: u64,
+
 pub fn init(source: []const u8) Tokenizer {
     return .{ .source = source };
+}
+
+/// Returns index of the next JSON control character
+/// or `null` in case of the `source` end.
+pub fn next(self: *Tokenizer) ?usize {
+    const source = self.source;
+
+    simd: switch (comptime CPU.arch) {
+        .x86_64 => switch (comptime getVectorLen_x64()) {
+            // TODO: merge 16, 64, variants
+            null => break :simd,
+
+            64 => {
+                const prevControlCharsMask = self.controlCharsMask;
+                if (prevControlCharsMask != 0) {
+                    const charIndex = @ctz(prevControlCharsMask);
+                    self.controlCharsMask = omitTrailingBit(prevControlCharsMask);
+                    return charIndex;
+                }
+
+                const Chunk = @Vector(64, u8);
+
+                if (Chunk.len > source.len) break :simd;
+
+                // TODO: check in ASM output if LLVM doesn't move tables initialization from loop
+
+                const controlCharTables = comptime genControlCharTables();
+
+                const controlCharLowNibbleTable = comptime block: {
+                    const tableArray = controlCharTables.lowNibbles;
+
+                    const tableVector: @Vector(tableArray.len, u8) = tableArray;
+                    break :block expandComptimeVector(tableVector, Chunk.len);
+                };
+                const controlCharHighNibbleTable = comptime block: {
+                    const tableArray = controlCharTables.highNibbles;
+
+                    const tableVector: @Vector(tableArray.len, u8) = tableArray;
+                    break :block expandComptimeVector(tableVector, Chunk.len);
+                };
+
+                const chunk: Chunk = source[0..Chunk.len].*;
+
+                const backslashesMask: u64 =
+                    @bitCast(chunk == @as(@Vector(64, u8), @splat('\\')));
+
+                const stringsMask: u64 = block: {
+                    const escapedCharsMask = getEscapedCharsMask(backslashesMask);
+
+                    const quotesMask: u64 =
+                        @bitCast(chunk == @as(@Vector(64, u8), @splat('"')));
+
+                    // The real, non-escaped quotes os strings
+                    const stringQuotesMask = quotesMask & ~escapedCharsMask;
+
+                    // Prefix XOR fills all bits between quotes with 1
+                    break :block getMaskPrefixXor(stringQuotesMask);
+                };
+
+                const chunkAnyControlCharsMask: u64 = block: {
+                    const chunkLowNibbles = getLowNibblesVector(64, chunk);
+                    const chunkHighNibbles = getHighNibblesVector(64, chunk);
+
+                    const chunkLowNibblesMatch = shuffleVector512_x64(
+                        controlCharLowNibbleTable,
+                        chunkLowNibbles,
+                    );
+                    const chunkHighNibblesMatch = shuffleVector512_x64(
+                        controlCharHighNibbleTable,
+                        chunkHighNibbles,
+                    );
+
+                    break :block @bitCast((chunkLowNibblesMatch & chunkHighNibblesMatch) != 0);
+                };
+
+                const chunkControlCharsMask = chunkAnyControlCharsMask & ~stringsMask;
+                if (chunkControlCharsMask != 0) {
+                    const charIndex = @ctz(chunkControlCharsMask);
+                    self.controlCharsMask = chunkControlCharsMask;
+                    return charIndex;
+                }
+
+                // TODO: call `next` recursively or return something
+            },
+            32 => {},
+            16 => {},
+            else => unreachable,
+        },
+    }
 }
 
 /// Returns `lowNibbles` and `highNibbles` constant-arrays,
@@ -346,6 +444,18 @@ inline fn shuffleVector128_aarch64(
         : [vector] "w" (vector),
           [mask] "w" (mask),
     );
+}
+
+/// Omits the least significant bit of `bits` integer that is set to 1.
+///
+/// Always returns 0 for 0.
+///
+/// Example:
+/// For `00100010` returns `00100000`
+///
+/// (Left bits: most significant, Right bits: least significant).
+inline fn omitTrailingBit(bits: anytype) @TypeOf(bits) {
+    return bits & (bits - 1);
 }
 
 /// Fills the high `byte` bits with 0, leaving only the low nibble.
