@@ -91,6 +91,7 @@ pub fn next(self: *Tokenizer) ?usize {
                     const shuffleVectorFn = comptime switch (vectorLen) {
                         64 => simdUtils.shuffleVector512_x64,
                         16 => simdUtils.shuffleVector128_x64,
+                        else => unreachable,
                     };
 
                     const chunkLowNibblesMatch = shuffleVectorFn(controlCharLowNibbleTable, chunkLowNibbles);
@@ -175,9 +176,7 @@ fn genControlCharTables() struct { lowNibbles: [16]u8, highNibbles: [8]u8 } {
 /// and returns `0`.
 ///
 /// For detailed explanation of this function, see https://arxiv.org/html/1902.08318v7#S3.
-inline fn getEscapedCharsMask(backslashesMask: anytype) @TypeOf(backslashesMask) {
-    comptime checkIsUint(@TypeOf(backslashesMask));
-
+inline fn getEscapedCharsMask(backslashesMask: u64) u64 {
     const evenBitsMask = comptime genEvenBitsMask(@TypeOf(backslashesMask));
     const oddBitsMask = comptime ~evenBitsMask;
 
@@ -229,9 +228,7 @@ inline fn getEscapedCharsMask(backslashesMask: anytype) @TypeOf(backslashesMask)
 /// For `01101111` returns `00100001`
 ///
 /// (Left bits: most significant, Right bits: least significant).
-inline fn getStartsOfMaskSequences(mask: anytype) @TypeOf(mask) {
-    comptime checkIsUint(@TypeOf(mask));
-
+inline fn getStartsOfMaskSequences(mask: u64) u64 {
     // Example:
     // Mask = `0110111100000000`.
     // Shifted = `Mask << 1` = `1101111000000000`
@@ -252,7 +249,7 @@ inline fn getStartsOfMaskSequences(mask: anytype) @TypeOf(mask) {
 /// For `Mask = 01101111`, `Starts = 00100001`,
 /// returns `10010000` (Ends shifted by 1,
 /// to get the real ends - `10010000 >> 1`, which is `01001000`).
-inline fn getEndsOfMaskSequences(mask: anytype, startsMask: @TypeOf(mask)) @TypeOf(mask) {
+inline fn getEndsOfMaskSequences(mask: u64, startsMask: u64) u64 {
     // E.g `startsMask` is `00000100`, `mask` is `00011100`.
     // Addition carries `startsMask` bits to the left, forming ends of sequences:
     // `00000100` + `00111000` = `01000000`
@@ -267,9 +264,7 @@ inline fn getEndsOfMaskSequences(mask: anytype, startsMask: @TypeOf(mask)) @Type
 /// (Left bits: most significant, Right bits: least significant).
 ///
 /// It is the same as `for(.{0,0,0,1,0,0,1,0}, 0..) |el, i| result[i] ^= el;`.
-inline fn getBitsPrefixXor(bits: anytype) @TypeOf(bits) {
-    comptime checkIsUint(@TypeOf(bits));
-
+inline fn getBitsPrefixXor(bits: u64) u64 {
     // Carryless multiplying by a constant value of N bits, where every bit is `1`,
     // shifts `mask` N times and does XOR between shifting results,
     // which is a prefix XOR at hardware level
@@ -279,7 +274,7 @@ inline fn getBitsPrefixXor(bits: anytype) @TypeOf(bits) {
     );
 }
 
-/// Carryless multiplication.
+/// Carryless multiplication of two integers less than 64 bits.
 inline fn mulCarryless(a: anytype, b: @TypeOf(a)) @TypeOf(a) {
     switch (CPU.arch) {
         .x86_64 => if (Target.x86.featureSetHas(CPU.features, .pclmul)) {
@@ -314,12 +309,11 @@ inline fn mulCarryless(a: anytype, b: @TypeOf(a)) @TypeOf(a) {
 /// Checks if `T` is unsigned.
 ///
 /// Returns a comptime mask of type `T`, where every bit at even index is `1`.
-fn genEvenBitsMask(comptime T: type) T {
-    comptime checkIsUint(T);
+fn genEvenBitsMask() u64 {
+    // Division a value where all bits are 1 (max value) by 3
+    // results in a sequence of bits where only even bits are set to 1
 
-    const maxTValue = math.maxInt(T);
-
-    return maxTValue / 3;
+    return math.maxInt(u64) / 3;
 }
 
 /// Omits the least significant bit of `bits` integer that is set to 1.
@@ -330,7 +324,7 @@ fn genEvenBitsMask(comptime T: type) T {
 /// For `00100010` returns `00100000`
 ///
 /// (Left bits: most significant, Right bits: least significant).
-inline fn omitTrailingBit(bits: anytype) @TypeOf(bits) {
+inline fn omitTrailingBit(bits: u64) u64 {
     return bits & (bits - 1);
 }
 
@@ -341,12 +335,4 @@ inline fn getLowNibble(byte: u8) u8 {
 /// Moves the high `byte` bits to the low bits, filling the previous place of high bits with 0.
 inline fn getHighNibble(byte: u8) u8 {
     return byte >> 4;
-}
-
-/// If `T` is not an unsigned integer, shows a compile error.
-fn checkIsUint(comptime T: type) void {
-    const TInfo = @typeInfo(T);
-
-    if (TInfo != .int and TInfo.int.signedness)
-        @compileError("An integer expected");
 }
