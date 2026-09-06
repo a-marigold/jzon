@@ -42,8 +42,8 @@ pub inline fn shuffleVector128_x64(
     mask: @Vector(16, u8),
 ) @TypeOf(vector) {
     return asm ("pshufb %[mask], %[vector]" // `vector` is mutated
-        : [vector] "+x" (vector),
-        : [mask] "x" (mask),
+        : [vector] "+v" (vector),
+        : [mask] "v" (mask),
     );
 }
 
@@ -61,9 +61,9 @@ pub inline fn shuffleVector256_x64(
     mask: @Vector(32, u8),
 ) @TypeOf(vector) {
     return asm ("vpshufb %[mask], %[vector], %[result]"
-        : [result] "=x" (-> @Vector(32, u8)),
-        : [vector] "x" (vector),
-          [mask] "x" (mask),
+        : [result] "=v" (-> @Vector(32, u8)),
+        : [vector] "v" (vector),
+          [mask] "v" (mask),
     );
 }
 
@@ -76,9 +76,9 @@ pub inline fn shuffleVector512_x64(
     mask: @Vector(64, u8),
 ) @TypeOf(vector) {
     return asm ("vpshufb %[mask], %[vector], %[result]"
-        : [result] "=x" (-> @Vector(64, u8)),
-        : [vector] "x" (vector),
-          [mask] "x" (mask),
+        : [result] "=v" (-> @Vector(64, u8)),
+        : [vector] "v" (vector),
+          [mask] "v" (mask),
     );
 }
 
@@ -135,7 +135,7 @@ pub inline fn shuffleVector128_aarch64(
 pub inline fn vectorToBits128_x64(vector: @Vector(16, bool)) u64 {
     return asm ("pmovmskb %[vector], %[result]"
         : [result] "=r" (-> u64),
-        : [vector] "x" (vector),
+        : [vector] "v" (vector),
     );
 }
 /// Converts a boolean vector to 64-bit mask.
@@ -157,39 +157,6 @@ pub inline fn vectorToBits512_x64(vector: @Vector(64, bool)) u64 {
           [mask] "=k" (mask),
         : [vector] "v" (vector),
     );
-}
-
-/// Converts a boolean vector to 64-bit mask.
-/// Every `true` element of vector is `1` bit at position of the element index in mask.
-pub inline fn vectorToBits128_aarch64(vector: @Vector(16, bool)) u64 {
-    // The first half of this vector contains `00000001`, `00000010`, ..., `10000000`.
-    // The second half is a duplicated first half
-    const singleBitMasks: @Vector(16, u8) = comptime block: {
-        var masks: [16]u8 = undefined;
-
-        var mask = 0;
-        for (0..8) |index| {
-            mask = 1 << index;
-
-            masks[index] = mask;
-            masks[index + 8] = mask;
-        }
-
-        break :block masks;
-    };
-
-    // Replace every `true` (0xFF) byte of `vector`
-    // with a byte, where only one bit is set to 1,
-    // representing its index in resulting mask
-    const singleBitsVector = vector & singleBitMasks;
-
-    const lowHalfVector: @Vector(8, bool) = singleBitsVector[0..8];
-    const highHalfVector: @Vector(8, bool) = singleBitsVector[8..];
-
-    const lowHalfMask = @reduce(.Or, lowHalfVector);
-    const highHalfMask = @reduce(.Or, highHalfVector);
-
-    return (highHalfMask << 8) | lowHalfMask;
 }
 
 /// Fills high bits of each `vector` element with 0 and leaves only the low bits.
