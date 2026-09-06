@@ -130,32 +130,38 @@ pub inline fn shuffleVector128_aarch64(
     );
 }
 
-/// Converts a boolean vector to 64-bit mask.
-/// Every `true` element of vector is `1` bit at position of the element index in mask.
-pub inline fn vectorToBits128_x64(vector: @Vector(16, bool)) u64 {
+/// Compares every byte of two vectors,
+/// and if they are equal, sets bit of their position
+/// (e.g, the second bit if the second elements are compared)
+/// in the resulting mask to `1`.
+pub inline fn getVectorsEqualBits128_x64(
+    a: @Vector(16, u8),
+    b: @Vector(16, u8),
+) u64 {
+    const equalVector = a == b;
     return asm ("pmovmskb %[vector], %[result]"
         : [result] "=r" (-> u64),
-        : [vector] "v" (vector),
+        : [vector] "v" (equalVector),
     );
 }
-/// Converts a boolean vector to 64-bit mask.
-/// Every `true` element of vector is `1` bit at position of the element index in mask.
-pub inline fn vectorToBits256_x64(vector: @Vector(32, bool)) u64 {
-    return asm ("vpmovmskb %[vector], %[result]"
-        : [result] "=r" (-> u64),
-        : [vector] "v" (vector),
-    );
-}
-/// Converts a boolean vector to 64-bit mask.
-/// Every `true` element of vector is `1` bit at position of the element index in mask.
-pub inline fn vectorToBits512_x64(vector: @Vector(64, bool)) u64 {
-    var mask: u64 = undefined;
+
+/// Compares every byte of the two vectors,
+/// and if they are equal, sets bit of their position
+/// (e.g, the second bit if the second elements are compared)
+/// in the resulting mask to `1`.
+pub inline fn getVectorsEqualBits512_x64(
+    a: @Vector(64, u8),
+    b: @Vector(64, u8),
+) u64 {
+    var mask: u64 = 0;
     return asm (
-        \\ vpmovb2m %[vector], %[mask]
+    // `$0` means `EQUAL` operation
+        \\ vpcmpb $0, %[a], %[b], %[mask]
         \\ kmovq %[mask], %[result]
-        : [result] "=r" (-> u64),
-          [mask] "=k" (mask),
-        : [vector] "v" (vector),
+        : [result] "=r" (-> usize),
+          [mask] "=&k" (mask),
+        : [a] "v" (a),
+          [b] "v" (b),
     );
 }
 
