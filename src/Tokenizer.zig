@@ -14,6 +14,7 @@ const CONTROL_CHARS = [_]u8{ '[', ']', '{', '}', ':', ',' };
 /// Doesn't containg the full source.
 /// Instead, it starts with the end of the previously handled part.
 source: []const u8,
+
 /// Mask, representing positions of control chars in `source`.
 ///
 /// Bits of it which set to 1 only if they contain a control char.
@@ -40,7 +41,8 @@ pub fn next(self: *Tokenizer) ?usize {
         .x86_64 => switch (comptime simdUtils.getVectorLen_x64()) {
             null => break :simd,
 
-            // 128- (16 byte) and 512- (64 byte) bit variations have quite the same 'shuffle' instructions
+            // 16 byte and 64 byte variations
+            // have quite the same 'shuffle' instructions
             16, 64 => |vectorLen| {
                 const prevControlCharsMask = self.controlCharsMask;
                 if (prevControlCharsMask != 0) {
@@ -72,14 +74,20 @@ pub fn next(self: *Tokenizer) ?usize {
 
                 const chunk: Chunk = source[0..Chunk.len].*;
 
+                const vectorToBits = comptime switch (Chunk.len) {
+                    64 => simdUtils.vectorToBits512_x64,
+                    16 => simdUtils.vectorToBits128_x64,
+                    else => unreachable,
+                };
+
                 const backslashesMask: u64 =
-                    @bitCast(chunk == @as(@Vector(Chunk.len, u8), @splat('\\')));
+                    vectorToBits(chunk == simdUtils.splatVector(Chunk.len, '\\'));
 
                 const stringsMask: u64 = block: {
                     const escapedCharsMask = getEscapedCharsMask(backslashesMask);
 
                     const quotesMask: u64 =
-                        @bitCast(chunk == @as(@Vector(Chunk.len, u8), @splat('"')));
+                        vectorToBits(chunk == simdUtils.splatVector(Chunk.len, '"'));
 
                     // Non-escaped quotes of strings
                     const stringQuotesMask = quotesMask & ~escapedCharsMask;
@@ -99,16 +107,16 @@ pub fn next(self: *Tokenizer) ?usize {
                     const chunkLowNibbles = simdUtils.getLowNibblesVector(Chunk.len, chunk);
                     const chunkHighNibbles = simdUtils.getHighNibblesVector(Chunk.len, chunk);
 
-                    const shuffleVectorFn = comptime switch (vectorLen) {
+                    const shuffleVector = comptime switch (vectorLen) {
                         64 => simdUtils.shuffleVector512_x64,
                         16 => simdUtils.shuffleVector128_x64,
                         else => unreachable,
                     };
 
-                    const chunkLowNibblesMatch = shuffleVectorFn(controlCharLowNibbleTable, chunkLowNibbles);
-                    const chunkHighNibblesMatch = shuffleVectorFn(controlCharHighNibbleTable, chunkHighNibbles);
+                    const chunkLowNibblesMatch = shuffleVector(controlCharLowNibbleTable, chunkLowNibbles);
+                    const chunkHighNibblesMatch = shuffleVector(controlCharHighNibbleTable, chunkHighNibbles);
 
-                    break :block @bitCast((chunkLowNibblesMatch & chunkHighNibblesMatch) != 0);
+                    break :block vectorToBits((chunkLowNibblesMatch & chunkHighNibblesMatch) != 0);
                 };
 
                 const chunkControlCharsMask = chunkAnyControlCharsMask & ~stringsMask;
@@ -154,6 +162,7 @@ fn genControlCharTables() struct { lowNibbles: [16]u8, highNibbles: [8]u8 } {
         // 8 unique flags (00000001, 00000010, ...) for every high nibble
         const flagsArray: [8]u8 = undefined;
 
+        // TODO: fix flag update logic
         var flag = 1;
         for (flagsArray) |*flagEl| {
             flagEl.* = flag;
@@ -191,7 +200,7 @@ fn genControlCharTables() struct { lowNibbles: [16]u8, highNibbles: [8]u8 } {
 ///
 /// For detailed explanation of this function, see https://arxiv.org/html/1902.08318v7#S3.
 inline fn getEscapedCharsMask(backslashesMask: u64) u64 {
-    const evenBitsMask = comptime genEvenBitsMask(@TypeOf(backslashesMask));
+    const evenBitsMask = comptime genEvenBitsMask();
     const oddBitsMask = comptime ~evenBitsMask;
 
     const backslashesStarts = getStartsOfMaskSequences(backslashesMask);
