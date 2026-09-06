@@ -23,6 +23,10 @@ source: []const u8,
 /// Reseted to 0 when control chars of the SIMD chunk are out.
 controlCharsMask: u64,
 
+/// Contains `true` when `Tokenizer.controlCharsMask`
+/// ends with an opened string, or `false` if doesn't.
+isStringOpened: bool,
+
 pub fn init(source: []const u8) Tokenizer {
     return .{ .source = source };
 }
@@ -77,11 +81,18 @@ pub fn next(self: *Tokenizer) ?usize {
                     const quotesMask: u64 =
                         @bitCast(chunk == @as(@Vector(Chunk.len, u8), @splat('"')));
 
-                    // The real, non-escaped quotes os strings
+                    // Non-escaped quotes of strings
                     const stringQuotesMask = quotesMask & ~escapedCharsMask;
 
                     // Prefix XOR fills all bits between quotes with 1
-                    break :block getBitsPrefixXor(stringQuotesMask);
+                    const stringsMask = getBitsPrefixXor(stringQuotesMask);
+
+                    // E.g, `stringsMask` of the current chunk is:
+                    // `abc", "def",`
+                    // `000111100011`, and it's incorrect - `abc` was opened before.
+                    // So invert it (`~stringsMask`):
+                    // `111000011100`
+                    break :block if (self.isStringOpened) ~stringsMask else stringsMask;
                 };
 
                 const chunkAnyControlCharsMask: u64 = block: {
@@ -103,7 +114,10 @@ pub fn next(self: *Tokenizer) ?usize {
                 const chunkControlCharsMask = chunkAnyControlCharsMask & ~stringsMask;
                 if (chunkControlCharsMask != 0) {
                     const charIndex = @ctz(chunkControlCharsMask);
+
                     self.controlCharsMask = chunkControlCharsMask;
+                    self.isStringOpened = (stringsMask & 1) == 1;
+
                     return charIndex;
                 }
 
