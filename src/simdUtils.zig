@@ -8,11 +8,14 @@ const CPU = builtin.cpu;
 ///
 /// Returns 64 only if the target is `avx512bw` (which supports 64-byte vector shuffles).
 /// If the target supports just `avx512`, 32 is returned.
-fn getVectorLen_x64() ?comptime_int {
+pub inline fn getVectorLen_x64() ?comptime_int {
     const features = CPU.features;
     const hasFeature = Target.x86.featureSetHas;
 
-    return if (hasFeature(features, .avx512bw))
+    return if (hasFeature(
+        features,
+        .avx512bw, // Allows instructions with bytes within 512-bit registers.
+    ))
         64
     else if (hasFeature(features, .avx2))
         32
@@ -34,7 +37,7 @@ fn getVectorLen_x64() ?comptime_int {
 /// 3. ...
 ///
 /// Returns the resulting vector.
-inline fn shuffleVector128_x64(
+pub inline fn shuffleVector128_x64(
     vector: @Vector(16, u8),
     mask: @Vector(16, u8),
 ) @TypeOf(vector) {
@@ -53,7 +56,7 @@ inline fn shuffleVector128_x64(
 /// Returns the resulting vector.
 ///
 /// Split the result in halves of 128-bits to get the two results.
-inline fn shuffleVector256_x64(
+pub inline fn shuffleVector256_x64(
     vector: @Vector(32, u8),
     mask: @Vector(32, u8),
 ) @TypeOf(vector) {
@@ -68,7 +71,7 @@ inline fn shuffleVector256_x64(
 /// allowing indexing the whole 512-bit vector.
 ///
 /// Returns the resulting vector.
-inline fn shuffleVector512_x64(
+pub inline fn shuffleVector512_x64(
     vector: @Vector(64, u8),
     mask: @Vector(64, u8),
 ) @TypeOf(vector) {
@@ -80,14 +83,15 @@ inline fn shuffleVector512_x64(
 }
 
 /// Returns `true` when 128-bit vector-shuffle is supported on `aarch64`.
-fn is128BitVector_aarch64() bool {
+pub inline fn is128BitVector_aarch64() bool {
     return Target.aarch64.featureSetHas(CPU.features, .neon);
 }
 /// More preferred than `is128BitVector_aarch64` result.
 ///
 /// Returns `true` only when the `aarch64` target supports vectors with variable length (128-512 bit),
 /// and only when the target supports 32-64 byte shuffles with them.
-fn isVariableVectorLen_aarch64() bool {
+pub inline fn isVariableVectorLen_aarch64() bool {
+    // TODO: sve or sve2?
     return Target.aarch64.featureSetHas(CPU.features, .sve2);
 }
 /// Calling this function without
@@ -98,7 +102,7 @@ fn isVariableVectorLen_aarch64() bool {
 /// The result of this function should never be persisted 'cause it varies
 /// accross the CPU threads, and if the OS moves the parser
 /// to another thread during a context switch, the result can change.
-inline fn getVariableVectorLen_aarch64() usize {
+pub inline fn getVariableVectorLen_aarch64() usize {
     return asm ("cntb %[result]"
         : [result] "=r" (-> usize),
     );
@@ -115,7 +119,7 @@ inline fn getVariableVectorLen_aarch64() usize {
 /// 3. ...
 ///
 /// Returns the resulting vector.
-inline fn shuffleVector128_aarch64(
+pub inline fn shuffleVector128_aarch64(
     vector: @Vector(16, u8),
     mask: @Vector(16, u8),
 ) @Vector(16, u8) {
@@ -126,8 +130,37 @@ inline fn shuffleVector128_aarch64(
     );
 }
 
+/// Converts a boolean vector to 64-bit mask.
+/// Every `true` element of vector is `1` bit at position of the element index in mask.
+pub inline fn vectorToBits128_x64(vector: @Vector(16, bool)) u64 {
+    return asm ("pmovmskb %[vector], %[result]"
+        : [result] "=r" (-> u64),
+        : [vector] "x" (vector),
+    );
+}
+/// Converts a boolean vector to 64-bit mask.
+/// Every `true` element of vector is `1` bit at position of the element index in mask.
+pub inline fn vectorToBits256_x64(vector: @Vector(32, bool)) u64 {
+    return asm ("vpmovmskb %[vector], %[result]"
+        : [result] "=r" (-> u64),
+        : [vector] "v" (vector),
+    );
+}
+/// Converts a boolean vector to 64-bit mask.
+/// Every `true` element of vector is `1` bit at position of the element index in mask.
+pub inline fn vectorToBits512_x64(vector: @Vector(64, bool)) u64 {
+    var mask: u64 = undefined;
+    return asm (
+        \\ vpmovb2m %[vector], %[mask]
+        \\ kmovq %[mask], %[result]
+        : [result] "=r" (-> u64),
+          [mask] "=k" (mask),
+        : [vector] "v" (vector),
+    );
+}
+
 /// Fills high bits of each `vector` element with 0 and leaves only the low bits.
-inline fn getLowNibblesVector(
+pub inline fn getLowNibblesVector(
     comptime len: comptime_int,
     vector: @Vector(len, u8),
 ) @Vector(len, u8) {
@@ -135,17 +168,20 @@ inline fn getLowNibblesVector(
 }
 
 /// Moves high bits of each `vector` element to its low bits.
-inline fn getHighNibblesVector(
+pub inline fn getHighNibblesVector(
     comptime len: comptime_int,
     vector: @Vector(len, u8),
 ) @Vector(len, u8) {
     return vector >> @as(@TypeOf(vector), @splat(4));
 }
 
-/// Expands `vector` to `newLen` and fills new elements with 0.
-fn expandComptimeVector(
+/// Expands `vector` to `newLen` and its fills new elements with 0.
+pub inline fn expandComptimeVector(
     comptime vector: anytype,
     comptime newLen: comptime_int,
 ) @Vector(newLen, u8) {
     return vector ++ @as(@Vector(newLen - vector.len, u8), @splat(0));
+}
+pub inline fn splatVector(comptime len: comptime_int, comptime byte: u8) @Vector(len, u8) {
+    return @as(@Vector(len, u8), @splat(byte));
 }
