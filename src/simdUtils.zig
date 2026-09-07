@@ -144,7 +144,7 @@ pub inline fn compareToBits128_x64(
     a: @Vector(16, u8),
     b: @Vector(16, u8),
 ) u64 {
-    const equalVector = switch (operation) {
+    const equalVector = switch (comptime operation) {
         .Eql => a == b,
         .NotEql => a != b,
     };
@@ -170,11 +170,60 @@ pub inline fn compareToBits512_x64(
           [mask] "=&k" (mask),
         : [a] "v" (a),
           [b] "v" (b),
-          [operation] "i" (switch (operation) {
+          [operation] "i" (switch (comptime operation) {
             .Eql => _MM_CMPINT_EQ,
             .NotEql => _MM_CMPINT_NE,
           }),
     );
+}
+
+/// Compares every byte of the two vectors using `operation`,
+/// and if they are equal, sets bit of their position
+/// (e.g, the second bit if the second elements are compared)
+/// in the resulting mask to `1`.
+pub inline fn compareToBits128_aarch64(
+    comptime operation: CompareOperation,
+    a: @Vector(16, u8),
+    b: @Vector(16, u8),
+) u64 {
+    const comparedVector = switch (comptime operation) {
+        .Eql => a == b,
+        .NotEql => a != b,
+    };
+
+    // The first half of this vector contains `00000001`, `00000010`, ..., `10000000`.
+    // The second half is a duplicated first half
+    const singleBitMasks: @Vector(16, u8) =
+        comptime block: {
+            var masks: [16]u8 = undefined;
+
+            var mask = 0;
+            for (0..8) |index| {
+                mask = 1 << index;
+
+                masks[index] = mask;
+                masks[index + 8] = mask;
+            }
+
+            break :block masks;
+        };
+
+    // Replace every `true` (0xFF) byte of `vector`
+    // with a byte, where only one bit is set to 1,
+    // representing its bit index in resulting mask
+    const singleBitsVector = comparedVector & singleBitMasks;
+
+    const lowHalfVector: @Vector(8, u8) = singleBitsVector[0..8];
+    const highHalfVector: @Vector(8, u8) = singleBitsVector[8..];
+
+    // Every byte has only one unique bit set to 1,
+    // so `Add` accross all elements is the same
+    // as `Or` accross the elements:
+    // `0001` + `0010` = `0011` = `0001` | `0010`
+    const lowHalfMask: u64 = @reduce(.Add, lowHalfVector);
+    const highHalfMask: u64 = @reduce(.Add, highHalfVector);
+
+    return (highHalfMask << 8) | lowHalfMask;
 }
 
 /// Fills high bits of each `vector` element with 0 and leaves only the low bits.
