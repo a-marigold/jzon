@@ -200,6 +200,3 @@ pub inline fn expandComptimeVector(
 ) @Vector(newLen, u8) {
     return vector ++ @as(@Vector(newLen - vector.len, u8), @splat(0));
 }
-pub inline fn splatVector(comptime len: comptime_int, comptime byte: u8) @Vector(len, u8) {
-    return @as(@Vector(len, u8), @splat(byte));
-}
