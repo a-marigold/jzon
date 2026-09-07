@@ -226,6 +226,41 @@ pub inline fn compareToBits128_aarch64(
     return (highHalfMask << 8) | lowHalfMask;
 }
 
+/// Carryless multiplication of two integers up to 64 bits.
+pub inline fn mulCarryless(a: anytype, b: @TypeOf(a)) @TypeOf(a) {
+    switch (CPU.arch) {
+        .x86_64 => if (Target.x86.featureSetHas(CPU.features, .pclmul)) {
+            const aVector: @Vector(2, u64) = .{ a, 0 };
+            const bVector: @Vector(2, u64) = .{ b, 0 };
+
+            const resultVector = asm (
+                // `0x00` means the least significant bits of vectors are multiplied
+                    "pclmulqdq $0x00, %[a], %[b]" // `b` is mutated
+                    : [b] "+x" (bVector),
+                    : [a] "x" (aVector),
+                );
+            return resultVector[0];
+        },
+        .aarch64 => if (Target.aarch64.featureSetHasAny(CPU.features, .{
+            Target.aarch64.Feature.sve_aes,
+            Target.aarch64.Feature.sve_aes2,
+        })) {
+            const aVector: @Vector(2, u64) = .{ a, 0 };
+            const bVector: @Vector(2, u64) = .{ b, 0 };
+
+            const resultVector = asm ("pmull %[result].1q, %[a].1d, %[b].1d"
+                : [result] "=w" (-> @Vector(2, u64)),
+                : [a] "w" (aVector),
+                  [b] "w" (bVector),
+            );
+            return resultVector[0];
+        },
+
+        // TODO: a software realization if it turns out to be needed
+        else => @compileError("Unsupported architecture"),
+    }
+}
+
 /// Fills high bits of each `vector` element with 0 and leaves only the low bits.
 pub inline fn getLowNibblesVector(
     comptime len: comptime_int,

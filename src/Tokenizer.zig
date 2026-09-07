@@ -162,7 +162,6 @@ fn genControlCharTables() struct { lowNibbles: [16]u8, highNibbles: [8]u8 } {
         // 8 unique flags (00000001, 00000010, ...) for every high nibble
         const flags: [8]u8 = undefined;
 
-        // TODO: fix flag update logic
         var flag = 0;
         for (0..flags.len) |index| {
             flag = 1 << index;
@@ -288,45 +287,10 @@ inline fn getEndsOfMaskSequences(mask: u64, startsMask: u64) u64 {
 ///
 /// It is the same as `for(.{0,0,0,1,0,0,1,0}, 0..) |el, i| result[i] ^= el;`.
 inline fn getBitsPrefixXor(bits: u64) u64 {
-    // Carryless multiplying by a constant value of N bits, where every bit is `1`,
+    // Carryless multiplying by a constant value of N bits, where every bit is `1` (max value),
     // shifts `mask` N times and does XOR between shifting results,
     // which is a prefix XOR at hardware level
-    return mulCarryless(
-        bits,
-        math.maxInt(@TypeOf(bits)),
-    );
-}
-
-/// Carryless multiplication of two integers less than 64 bits.
-inline fn mulCarryless(a: anytype, b: @TypeOf(a)) @TypeOf(a) {
-    switch (CPU.arch) {
-        .x86_64 => if (Target.x86.featureSetHas(CPU.features, .pclmul)) {
-            const aVector: @Vector(2, u64) = .{ a, 0 };
-            const bVector: @Vector(2, u64) = .{ b, 0 };
-
-            const resultVector = asm (
-                // `0x00` means the least significant bits of vectors are multiplied
-                    "pclmulqdq $0x00, %[a], %[b]" // `b` is mutated
-                    : [b] "+x" (bVector),
-                    : [a] "x" (aVector),
-                );
-            return resultVector[0];
-        },
-        .aarch64 => if (Target.aarch64.featureSetHas(CPU.features, .neon)) {
-            const aVector: @Vector(2, u64) = .{ a, 0 };
-            const bVector: @Vector(2, u64) = .{ b, 0 };
-
-            const resultVector = asm ("pmull %[result].1q, %[a].1d, %[b].1d"
-                : [result] "=w" (-> @Vector(2, u64)),
-                : [a] "w" (aVector),
-                  [b] "w" (bVector),
-            );
-            return resultVector[0];
-        },
-
-        // TODO: a software realization if it turns out to be needed
-        else => @compileError("Unsupported architecture"),
-    }
+    return simdUtils.mulCarryless(bits, math.maxInt(@TypeOf(bits)));
 }
 
 /// Checks if `T` is unsigned.
@@ -335,7 +299,6 @@ inline fn mulCarryless(a: anytype, b: @TypeOf(a)) @TypeOf(a) {
 fn genEvenBitsMask() u64 {
     // Division a value where all bits are 1 (max value) by 3
     // results in a sequence of bits where only even bits are set to 1
-
     return math.maxInt(u64) / 3;
 }
 
@@ -350,7 +313,6 @@ fn genEvenBitsMask() u64 {
 inline fn omitTrailingBit(bits: u64) u64 {
     return bits & (bits - 1);
 }
-
 /// Fills the high `byte` bits with 0, leaving only the low nibble.
 inline fn getLowNibble(byte: u8) u8 {
     return byte & 0b00001111;
