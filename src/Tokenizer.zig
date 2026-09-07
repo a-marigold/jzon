@@ -160,17 +160,17 @@ fn genControlCharTables() struct { lowNibbles: [16]u8, highNibbles: [8]u8 } {
     // Indexes are high nibbles of control chars
     const highNibbleFlags = flagsBlock: {
         // 8 unique flags (00000001, 00000010, ...) for every high nibble
-        const flagsArray: [8]u8 = undefined;
+        const flags: [8]u8 = undefined;
 
         // TODO: fix flag update logic
-        var flag = 1;
-        for (flagsArray) |*flagEl| {
-            flagEl.* = flag;
+        var flag = 0;
+        for (0..flags.len) |index| {
+            flag = 1 << index;
 
-            flag = 1 << flag;
+            flags[index] = flag;
         }
 
-        break :flagsBlock flagsArray;
+        break :flagsBlock flags;
     };
 
     for (CONTROL_CHARS) |char| {
