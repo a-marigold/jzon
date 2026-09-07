@@ -4,6 +4,9 @@ const builtin = @import("builtin");
 
 const CPU = builtin.cpu;
 
+const _MM_CMPINT_EQ = 0;
+const _MM_CMPINT_NE = 4;
+
 /// Returns 16, 32, 64 or `null` in case of lack of SIMD.
 ///
 /// Returns 64 only if the target is `avx512bw` (which supports 64-byte vector shuffles).
@@ -130,38 +133,47 @@ pub inline fn shuffleVector128_aarch64(
     );
 }
 
-/// Compares every byte of two vectors,
+pub const CompareOperation = enum { Eql, NotEql };
+
+/// Compares every byte of the two vectors using `operation`,
 /// and if they are equal, sets bit of their position
 /// (e.g, the second bit if the second elements are compared)
 /// in the resulting mask to `1`.
-pub inline fn getVectorsEqualBits128_x64(
+pub inline fn compareToBits128_x64(
+    comptime operation: CompareOperation,
     a: @Vector(16, u8),
     b: @Vector(16, u8),
 ) u64 {
-    const equalVector = a == b;
+    const equalVector = switch (operation) {
+        .Eql => a == b,
+        .NotEql => a != b,
+    };
     return asm ("pmovmskb %[vector], %[result]"
         : [result] "=r" (-> u64),
         : [vector] "v" (equalVector),
     );
 }
-
-/// Compares every byte of the two vectors,
+/// Compares every byte of the two vectors using `operation`,
 /// and if they are equal, sets bit of their position
 /// (e.g, the second bit if the second elements are compared)
 /// in the resulting mask to `1`.
-pub inline fn getVectorsEqualBits512_x64(
+pub inline fn compareToBits512_x64(
+    comptime operation: CompareOperation,
     a: @Vector(64, u8),
     b: @Vector(64, u8),
 ) u64 {
     var mask: u64 = 0;
     return asm (
-    // `$0` means `EQUAL` operation
-        \\ vpcmpb $0, %[a], %[b], %[mask]
+        \\ vpcmpb %[operation], %[a], %[b], %[mask]
         \\ kmovq %[mask], %[result]
         : [result] "=r" (-> usize),
           [mask] "=&k" (mask),
         : [a] "v" (a),
           [b] "v" (b),
+          [operation] "i" (switch (operation) {
+            .Eql => _MM_CMPINT_EQ,
+            .NotEql => _MM_CMPINT_NE,
+          }),
     );
 }
 
