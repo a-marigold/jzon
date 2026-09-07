@@ -312,9 +312,32 @@ inline fn getBitsPrefixXor(bits: u64) u64 {
     // Carryless multiplying by a constant value of N bits, where every bit is `1` (max value),
     // shifts `mask` N times and does XOR between shifting results,
     // which is a prefix XOR at hardware level
+    if (simdUtils.isMulCarrylessSupported())
+        // TODO: maybe only bits at power of two indexes are faster than max value
+        return simdUtils.mulCarryless(bits, comptime math.maxInt(@TypeOf(bits)));
 
-    return simdUtils.mulCarryless(bits, comptime math.maxInt(@TypeOf(bits)));
-    // TODO: maybe only bits at power of two indexes are faster than max value
+    return getBitsPrefixXor_software(bits);
+}
+/// A software implementation for cases when
+/// the target CPU lacks of carry-less multiplication for prefix xor.
+inline fn getBitsPrefixXor_software(bits: u64) u64 {
+    const maxOffset = @typeInfo(u64).int.bits / 2;
+
+    var result = bits;
+
+    comptime var offset = 0;
+
+    comptime var iteration = 0;
+    inline while (offset <= maxOffset) : (iteration += 1) {
+        offset = 1 << iteration;
+
+        // Shift the prev result on a power of two offset
+        // and do XOR with it and just the prev result
+        // to get prefix XOR
+        result ^= result << offset;
+    }
+
+    return result;
 }
 
 /// Checks if `T` is unsigned.
