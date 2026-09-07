@@ -74,20 +74,18 @@ pub fn next(self: *Tokenizer) ?usize {
 
                 const chunk: Chunk = source[0..Chunk.len].*;
 
-                const vectorToBits = comptime switch (Chunk.len) {
-                    64 => simdUtils.vectorToBits512_x64,
-                    16 => simdUtils.vectorToBits128_x64,
+                const compareToBits = comptime switch (Chunk.len) {
+                    64 => simdUtils.compareToBits128_x64,
+                    16 => simdUtils.compareToBits512_x64,
                     else => unreachable,
                 };
 
-                const backslashesMask: u64 =
-                    vectorToBits(chunk == simdUtils.splatVector(Chunk.len, '\\'));
+                const backslashesMask: u64 = compareToBits(.Eql, chunk, @splat("\\"));
 
                 const stringsMask: u64 = block: {
                     const escapedCharsMask = getEscapedCharsMask(backslashesMask);
 
-                    const quotesMask: u64 =
-                        vectorToBits(chunk == simdUtils.splatVector(Chunk.len, '"'));
+                    const quotesMask = compareToBits(.Eql, chunk, @splat('"'));
 
                     // Non-escaped quotes of strings
                     const stringQuotesMask = quotesMask & ~escapedCharsMask;
@@ -114,9 +112,11 @@ pub fn next(self: *Tokenizer) ?usize {
                     };
 
                     const chunkLowNibblesMatch = shuffleVector(controlCharLowNibbleTable, chunkLowNibbles);
+
                     const chunkHighNibblesMatch = shuffleVector(controlCharHighNibbleTable, chunkHighNibbles);
 
-                    break :block vectorToBits((chunkLowNibblesMatch & chunkHighNibblesMatch) != 0);
+                    // TODO: Check for instruction producing a bit mask for vectors bitwise AND
+                    break :block compareToBits(.NotEql, chunkLowNibblesMatch & chunkHighNibblesMatch, @splat(0));
                 };
 
                 const chunkControlCharsMask = chunkAnyControlCharsMask & ~stringsMask;
