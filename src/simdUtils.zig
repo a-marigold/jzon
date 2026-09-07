@@ -97,8 +97,7 @@ pub inline fn isVariableVectorLen_aarch64() bool {
     // TODO: sve or sve2?
     return Target.aarch64.featureSetHas(CPU.features, .sve2);
 }
-/// Calling this function without
-/// checking `isVariableVectorLen_aarch64` can cause an illegal instruction fault.
+/// Calling this function without checking `isVariableVectorLen_aarch64` is illegal.
 ///
 /// Returns the length in bytes of one vector registers.
 ///
@@ -226,8 +225,21 @@ pub inline fn compareToBits128_aarch64(
     return (highHalfMask << 8) | lowHalfMask;
 }
 
-/// Carryless multiplication of two integers up to 64 bits.
-pub inline fn mulCarryless(a: anytype, b: @TypeOf(a)) @TypeOf(a) {
+pub inline fn isMulCarrylessSupported() bool {
+    return switch (CPU.arch) {
+        .x86_64 => Target.x86.featureSetHas(CPU.features, .pclmul),
+        .aarch64 => Target.aarch64.featureSetHasAny(CPU.features, .{
+            Target.aarch64.Feature.sve_aes,
+            Target.aarch64.Feature.sve_aes2,
+        }),
+
+        // TODO: other architectures
+        else => false,
+    };
+}
+
+/// Carry-less multiplication of two integers.
+pub inline fn mulCarryless(a: u64, b: u64) u64 {
     switch (CPU.arch) {
         .x86_64 => if (Target.x86.featureSetHas(CPU.features, .pclmul)) {
             const aVector: @Vector(2, u64) = .{ a, 0 };
@@ -255,8 +267,6 @@ pub inline fn mulCarryless(a: anytype, b: @TypeOf(a)) @TypeOf(a) {
             );
             return resultVector[0];
         },
-
-        // TODO: a software realization if it turns out to be needed
         else => @compileError("Unsupported architecture"),
     }
 }
