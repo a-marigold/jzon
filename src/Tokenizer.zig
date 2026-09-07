@@ -32,9 +32,31 @@ pub fn init(source: []const u8) Tokenizer {
     return .{ .source = source };
 }
 
-/// Returns index of the next JSON control character
-/// or `null` in case of the `source` end.
-pub fn next(self: *Tokenizer) ?usize {
+/// `next` function returns this value to indicate the end of `source`.
+pub const NEXT_END: usize =
+    @intCast(-1);
+
+/// `next` function returns this value to indicate that
+/// the current SIMD chunk or scalar symbol of `source` is inside a string.
+///
+/// - For scalars this appears when the tokenizer
+/// is currently inside, e.g, `key` of `"key": "string"`.
+///
+/// - Strings in SIMD chunks are skipped by the alghorithm,
+/// and `next` always returns indexes outside strings.
+/// However, JSON inputs sometimes have strings that
+/// are much bigger than one chunk.
+/// For example, chunk length is 64 bytes, but a string contains 200 bytes, and some iterations over this string
+/// are completely inside it, so `next` returns `NEXT_IN_STRING`.
+pub const NEXT_IN_STRING: usize =
+    @intCast(-2);
+
+/// Returns index of the next JSON control character.
+///
+/// If the tokenizer currently in string, returns `NEXT_IN_STRING`.
+///
+/// If the JSON `source` ends, returns `NEXT_END`.
+pub fn next(self: *Tokenizer) usize {
     const source = self.source;
 
     simd: switch (comptime CPU.arch) {
@@ -129,7 +151,7 @@ pub fn next(self: *Tokenizer) ?usize {
                     return charIndex;
                 }
 
-                // TODO: call `next` recursively or return something
+                return NEXT_IN_STRING;
             },
             32 => {},
             else => unreachable,
@@ -290,7 +312,9 @@ inline fn getBitsPrefixXor(bits: u64) u64 {
     // Carryless multiplying by a constant value of N bits, where every bit is `1` (max value),
     // shifts `mask` N times and does XOR between shifting results,
     // which is a prefix XOR at hardware level
-    return simdUtils.mulCarryless(bits, math.maxInt(@TypeOf(bits)));
+
+    return simdUtils.mulCarryless(bits, comptime math.maxInt(@TypeOf(bits)));
+    // TODO: maybe only bits at power of two indexes are faster than max value
 }
 
 /// Checks if `T` is unsigned.
