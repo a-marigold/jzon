@@ -89,6 +89,7 @@ pub fn next(self: *Tokenizer) usize {
                     const tableVector: @Vector(tableArray.len, u8) = tableArray;
                     break :block simdUtils.expandVector(tableVector, Chunk.len);
                 };
+
                 const controlCharHighNibbleTable = comptime block: {
                     const tableArray = controlCharTables.highNibbles;
 
@@ -142,17 +143,89 @@ pub fn next(self: *Tokenizer) usize {
                     break :block compareToBits(.NotEql, chunkLowNibblesMatch & chunkHighNibblesMatch, @splat(0));
                 };
 
-                const chunkControlCharsMask = chunkAnyControlCharsMask & ~stringsMask;
-                if (chunkControlCharsMask != 0) {
-                    const charIndex = @ctz(chunkControlCharsMask);
-
-                    self.controlCharsMask = chunkControlCharsMask;
+                const controlCharsMask = chunkAnyControlCharsMask & ~stringsMask;
+                if (controlCharsMask != 0) {
+                    self.controlCharsMask = controlCharsMask;
                     self.isStringOpened = (stringsMask & 1) == 1;
 
+                    const charIndex = @ctz(controlCharsMask);
                     return charIndex;
                 }
 
                 return NEXT_IN_STRING;
+            },
+
+            32 => {
+                // AVX2 (32-byte vectors) has a non-standard vector shuffle instruction,
+                // mask of which doesn't index all 32-bytes (see the code below).
+                // So use only 16 bytes
+                const shuffleVectorLen = 16;
+
+                const Chunk = @Vector(shuffleVectorLen, u8);
+
+                if (Chunk.len > source.len) break :simd;
+
+                const controlCharTables = comptime genControlCharTables();
+
+                const controlCharLowNibbleTable = comptime block: {
+                    const tableArray = controlCharTables.lowNibbles;
+
+                    const tableVector: @Vector(tableArray.len, u8) = tableArray;
+                    break :block simdUtils.expandVector(tableVector, Chunk.len);
+                };
+                const controlCharHighNibbleTable = comptime block: {
+                    const tableArray = controlCharTables.highNibbles;
+
+                    const tableVector: @Vector(tableArray.len, u8) = tableArray;
+                    break :block simdUtils.expandVector(tableVector, Chunk.len);
+                };
+
+                const chunk: Chunk = source[0..Chunk.len].*;
+
+                const stringsMask = block: {
+                    const backslashesMask =
+                        simdUtils.compareToBits128_x64(.Eql, chunk, @splat('\\'));
+
+                    const escapedCharsMask = getEscapedCharsMask(backslashesMask);
+
+                    const quotesMask =
+                        simdUtils.compareToBits128_x64(.Eql, chunk, @splat('"'));
+
+                    const unescapedQuotesMask = quotesMask & ~escapedCharsMask;
+
+                    const stringsMask = getBitsPrefixXor(unescapedQuotesMask);
+
+                    break :block if (self.isStringOpened) ~stringsMask else stringsMask;
+                };
+
+                const chunkAnyControlCharsMask = block: {
+                    const chunkLowNibbles = simdUtils.getLowNibblesVector(chunk);
+                    const chunkHighNibbles = simdUtils.getHighNibblesVector(chunk);
+
+                    const chunkMatch = simdUtils.shuffleVector256_x64(
+                        controlCharLowNibbleTable ++ controlCharHighNibbleTable,
+                        chunkLowNibbles ++ chunkHighNibbles,
+                    );
+
+                    const chunkLowNibblesMatch: Chunk = chunkMatch[0..16];
+                    const chunkHighNibblesMatch: Chunk = chunkMatch[16..];
+
+                    break :block simdUtils.compareToBits128_x64(
+                        .NotEql,
+                        chunkLowNibblesMatch & chunkHighNibblesMatch,
+                        @splat(0),
+                    );
+                };
+
+                self.isStringOpened = (stringsMask & 1) != 0;
+
+                const controlCharsMask = chunkAnyControlCharsMask & ~stringsMask;
+                if (controlCharsMask != 0) {
+                    self.controlCharsMask = controlCharsMask;
+
+                    const charIndex = @ctz(controlCharsMask);
+                    return charIndex;
+                }
             },
         },
     }
