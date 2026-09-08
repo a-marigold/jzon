@@ -52,7 +52,7 @@ pub inline fn shuffleVector128_x64(
 
 /// `mask` doesn't index all the 256-bit `vector`.
 /// Instead, 0..16 elements of `mask` index 0..16 elements of `vector`,
-/// and 16..32 elements of mask index 16..32 elemenets of `vector`.
+/// and 16..32 elements of mask index 16..32 elements of `vector`.
 ///
 /// That is, it is like a parallel `shuffleVector128_x64` for two masks and vectors.
 ///
@@ -271,6 +271,8 @@ pub inline fn mulCarryless(a: u64, b: u64) u64 {
     }
 }
 
+// TODO: receive `anytype` instead of `len` generic
+
 /// Fills high bits of each `vector` element with 0 and leaves only the low bits.
 pub inline fn getLowNibblesVector(
     comptime len: comptime_int,
@@ -287,9 +289,9 @@ pub inline fn getHighNibblesVector(
     return vector >> @as(@TypeOf(vector), @splat(4));
 }
 
-/// Expands `vector` to `newLen` and its fills new elements with 0.
-pub inline fn expandComptimeVector(
-    comptime vector: anytype,
+/// Expands `vector` which has `u8` elements to `newLen` and fills its new elements with 0.
+pub inline fn expandVector(
+    vector: anytype,
     comptime newLen: comptime_int,
 ) @Vector(newLen, u8) {
     return vector ++ @as(@Vector(newLen - vector.len, u8), @splat(0));

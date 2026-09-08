@@ -61,7 +61,9 @@ pub fn next(self: *Tokenizer) usize {
 
     simd: switch (comptime CPU.arch) {
         .x86_64 => switch (comptime simdUtils.getVectorLen_x64()) {
-            null => break :simd,
+            else => break :simd,
+
+            // TODO: merge 16-, 32-, 64- byte variations
 
             // 16 byte and 64 byte variations
             // have quite the same 'shuffle' instructions
@@ -85,16 +87,14 @@ pub fn next(self: *Tokenizer) usize {
                     const tableArray = controlCharTables.lowNibbles;
 
                     const tableVector: @Vector(tableArray.len, u8) = tableArray;
-                    break :block simdUtils.expandComptimeVector(tableVector, Chunk.len);
+                    break :block simdUtils.expandVector(tableVector, Chunk.len);
                 };
                 const controlCharHighNibbleTable = comptime block: {
                     const tableArray = controlCharTables.highNibbles;
 
                     const tableVector: @Vector(tableArray.len, u8) = tableArray;
-                    break :block simdUtils.expandComptimeVector(tableVector, Chunk.len);
+                    break :block simdUtils.expandVector(tableVector, Chunk.len);
                 };
-
-                const chunk: Chunk = source[0..Chunk.len].*;
 
                 const compareToBits = comptime switch (Chunk.len) {
                     64 => simdUtils.compareToBits128_x64,
@@ -102,18 +102,19 @@ pub fn next(self: *Tokenizer) usize {
                     else => unreachable,
                 };
 
-                const backslashesMask: u64 = compareToBits(.Eql, chunk, @splat("\\"));
+                const chunk: Chunk = source[0..Chunk.len].*;
 
                 const stringsMask: u64 = block: {
+                    const backslashesMask: u64 = compareToBits(.Eql, chunk, @splat('\\'));
+
                     const escapedCharsMask = getEscapedCharsMask(backslashesMask);
 
                     const quotesMask = compareToBits(.Eql, chunk, @splat('"'));
 
-                    // Non-escaped quotes of strings
-                    const stringQuotesMask = quotesMask & ~escapedCharsMask;
+                    const unescapedQuotesMask = quotesMask & ~escapedCharsMask;
 
                     // Prefix XOR fills all bits between quotes with 1
-                    const stringsMask = getBitsPrefixXor(stringQuotesMask);
+                    const stringsMask = getBitsPrefixXor(unescapedQuotesMask);
 
                     // E.g, `stringsMask` of the current chunk is:
                     // `abc", "def",`
@@ -153,8 +154,6 @@ pub fn next(self: *Tokenizer) usize {
 
                 return NEXT_IN_STRING;
             },
-            32 => {},
-            else => unreachable,
         },
     }
 }
@@ -331,8 +330,8 @@ inline fn getBitsPrefixXor_software(bits: u64) u64 {
     inline while (offset <= maxOffset) : (iteration += 1) {
         offset = 1 << iteration;
 
-        // Shift the prev result on a power of two offset
-        // and do XOR with it and just the prev result
+        // Shift the prev result on `offset` (a power of two)
+        // and do XOR between it and just the prev result
         // to get prefix XOR
         result ^= result << offset;
     }
@@ -360,6 +359,7 @@ fn genEvenBitsMask() u64 {
 inline fn omitTrailingBit(bits: u64) u64 {
     return bits & (bits - 1);
 }
+
 /// Fills the high `byte` bits with 0, leaving only the low nibble.
 inline fn getLowNibble(byte: u8) u8 {
     return byte & 0b00001111;
