@@ -60,173 +60,105 @@ pub fn next(self: *Tokenizer) usize {
     const source = self.source;
 
     simd: switch (comptime CPU.arch) {
-        .x86_64 => switch (comptime simdUtils.getVectorLen_x64()) {
-            else => break :simd,
+        .x86_64 => if (comptime simdUtils.getVectorLen_x64()) |vectorLen| {
+            // AVX2 (vectorLen == 32) has a specific shuffle vector instruction
+            // and uses not all 32 bytes of a SIMD chunk (see the code below)
+            const shuffleVectorLen = if (vectorLen == 32) 16 else vectorLen;
 
-            // TODO: merge 16-, 32-, 64- byte variations
+            const Chunk = @Vector(shuffleVectorLen, u8);
 
-            // 16 byte and 64 byte variations
-            // have quite the same 'shuffle' instructions
-            16, 64 => |vectorLen| {
-                const prevControlCharsMask = self.controlCharsMask;
-                if (prevControlCharsMask != 0) {
-                    const charIndex = @ctz(prevControlCharsMask);
-                    self.controlCharsMask = omitTrailingBit(prevControlCharsMask);
-                    return charIndex;
-                }
+            if (Chunk.len > source.len) break :simd;
 
-                const Chunk = @Vector(vectorLen, u8);
+            // TODO: check in ASM output if LLVM doesn't move tables initialization from loop
 
-                if (Chunk.len > source.len) break :simd;
+            const controlCharTables = comptime genControlCharTables();
 
-                // TODO: check in ASM output if LLVM doesn't move tables initialization from loop
+            const controlCharLowNibbleTable = comptime block: {
+                const tableArray = controlCharTables.lowNibbles;
+                const tableVector: @Vector(tableArray.len, u8) = tableArray;
+                break :block simdUtils.expandVector(tableVector, Chunk.len);
+            };
+            const controlCharHighNibbleTable = comptime block: {
+                const tableArray = controlCharTables.highNibbles;
+                const tableVector: @Vector(tableArray.len, u8) = tableArray;
+                break :block simdUtils.expandVector(tableVector, Chunk.len);
+            };
 
-                const controlCharTables = comptime genControlCharTables();
+            const compareToBits = comptime switch (Chunk.len) {
+                64 => simdUtils.compareToBits512_x64,
+                16 => simdUtils.compareToBits128_x64,
+                else => unreachable,
+            };
 
-                const controlCharLowNibbleTable = comptime block: {
-                    const tableArray = controlCharTables.lowNibbles;
+            const chunk: Chunk = source[0..Chunk.len].*;
 
-                    const tableVector: @Vector(tableArray.len, u8) = tableArray;
-                    break :block simdUtils.expandVector(tableVector, Chunk.len);
-                };
+            const stringsMask: u64 = block: {
+                const backslashesMask: u64 = compareToBits(.Eql, chunk, @splat('\\'));
 
-                const controlCharHighNibbleTable = comptime block: {
-                    const tableArray = controlCharTables.highNibbles;
+                const escapedCharsMask = getEscapedCharsMask(backslashesMask);
 
-                    const tableVector: @Vector(tableArray.len, u8) = tableArray;
-                    break :block simdUtils.expandVector(tableVector, Chunk.len);
-                };
+                const anyQuotesMask = compareToBits(.Eql, chunk, @splat('"'));
 
-                const compareToBits = comptime switch (Chunk.len) {
-                    64 => simdUtils.compareToBits128_x64,
-                    16 => simdUtils.compareToBits512_x64,
+                const unescapedQuotesMask = anyQuotesMask & ~escapedCharsMask;
+
+                // Prefix XOR fills all bits between quotes with 1
+                const stringsMask = getBitsPrefixXor(unescapedQuotesMask);
+
+                // For example, `stringsMask` of the current chunk is:
+                // `abc", "def",`
+                // `000111100011`, and it's incorrect - `abc` was opened before.
+                // So invert it (`~stringsMask`):
+                // `111000011100`
+                break :block if (self.isStringOpened) ~stringsMask else stringsMask;
+            };
+
+            const chunkAnyControlCharsMask: u64 = block: {
+                const chunkLowNibbles = simdUtils.getLowNibblesVector(chunk);
+                const chunkHighNibbles = simdUtils.getHighNibblesVector(chunk);
+
+                switch (comptime vectorLen) {
+                    64 => {
+                        const chunkLowNibblesMatch =
+                            simdUtils.shuffleVector512_x64(controlCharLowNibbleTable, chunkLowNibbles);
+                        const chunkHighNibblesMatch =
+                            simdUtils.shuffleVector512_x64(controlCharHighNibbleTable, chunkHighNibbles);
+
+                        // TODO: Replace it with `VPTESTMB` producing a bit mask from vectors bitwise AND
+                        break :block compareToBits(.NotEql, chunkLowNibblesMatch & chunkHighNibblesMatch, @splat(0));
+                    },
+                    32 => {
+                        const chunkNibblesMatch = simdUtils.shuffleVector256_x64(
+                            controlCharLowNibbleTable ++ controlCharHighNibbleTable,
+                            chunkLowNibbles ++ chunkHighNibbles,
+                        );
+
+                        const chunkLowNibblesMatch = chunkNibblesMatch[0..16];
+                        const chunkHighNibblesMatch = chunkNibblesMatch[16..];
+
+                        break :block compareToBits(.NotEql, chunkLowNibblesMatch & chunkHighNibblesMatch, @splat(0));
+                    },
+                    16 => {
+                        const chunkLowNibblesMatch =
+                            simdUtils.shuffleVector512_x64(controlCharLowNibbleTable, chunkLowNibbles);
+                        const chunkHighNibblesMatch =
+                            simdUtils.shuffleVector512_x64(controlCharHighNibbleTable, chunkHighNibbles);
+
+                        break :block compareToBits(.NotEql, chunkLowNibblesMatch & chunkHighNibblesMatch, @splat(0));
+                    },
                     else => unreachable,
-                };
-
-                const chunk: Chunk = source[0..Chunk.len].*;
-
-                const stringsMask: u64 = block: {
-                    const backslashesMask: u64 = compareToBits(.Eql, chunk, @splat('\\'));
-
-                    const escapedCharsMask = getEscapedCharsMask(backslashesMask);
-
-                    const quotesMask = compareToBits(.Eql, chunk, @splat('"'));
-
-                    const unescapedQuotesMask = quotesMask & ~escapedCharsMask;
-
-                    // Prefix XOR fills all bits between quotes with 1
-                    const stringsMask = getBitsPrefixXor(unescapedQuotesMask);
-
-                    // E.g, `stringsMask` of the current chunk is:
-                    // `abc", "def",`
-                    // `000111100011`, and it's incorrect - `abc` was opened before.
-                    // So invert it (`~stringsMask`):
-                    // `111000011100`
-                    break :block if (self.isStringOpened) ~stringsMask else stringsMask;
-                };
-
-                const chunkAnyControlCharsMask: u64 = block: {
-                    const chunkLowNibbles = simdUtils.getLowNibblesVector(chunk);
-                    const chunkHighNibbles = simdUtils.getHighNibblesVector(chunk);
-
-                    const shuffleVector = comptime switch (vectorLen) {
-                        64 => simdUtils.shuffleVector512_x64,
-                        16 => simdUtils.shuffleVector128_x64,
-                        else => unreachable,
-                    };
-
-                    const chunkLowNibblesMatch = shuffleVector(controlCharLowNibbleTable, chunkLowNibbles);
-
-                    const chunkHighNibblesMatch = shuffleVector(controlCharHighNibbleTable, chunkHighNibbles);
-
-                    // TODO: Check for instruction producing a bit mask for vectors bitwise AND
-                    break :block compareToBits(.NotEql, chunkLowNibblesMatch & chunkHighNibblesMatch, @splat(0));
-                };
-
-                const controlCharsMask = chunkAnyControlCharsMask & ~stringsMask;
-                if (controlCharsMask != 0) {
-                    self.controlCharsMask = controlCharsMask;
-                    self.isStringOpened = (stringsMask & 1) == 1;
-
-                    const charIndex = @ctz(controlCharsMask);
-                    return charIndex;
                 }
+            };
 
-                return NEXT_IN_STRING;
-            },
+            const controlCharsMask = chunkAnyControlCharsMask & ~stringsMask;
+            if (controlCharsMask != 0) {
+                self.controlCharsMask = controlCharsMask;
+                self.isStringOpened = (stringsMask & 1) == 1;
 
-            32 => {
-                // AVX2 (32-byte vectors) has a non-standard vector shuffle instruction,
-                // mask of which doesn't index all 32-bytes (see the code below).
-                // So use only 16 bytes
-                const shuffleVectorLen = 16;
+                const charIndex = @ctz(controlCharsMask);
+                return charIndex;
+            }
 
-                const Chunk = @Vector(shuffleVectorLen, u8);
-
-                if (Chunk.len > source.len) break :simd;
-
-                const controlCharTables = comptime genControlCharTables();
-
-                const controlCharLowNibbleTable = comptime block: {
-                    const tableArray = controlCharTables.lowNibbles;
-
-                    const tableVector: @Vector(tableArray.len, u8) = tableArray;
-                    break :block simdUtils.expandVector(tableVector, Chunk.len);
-                };
-                const controlCharHighNibbleTable = comptime block: {
-                    const tableArray = controlCharTables.highNibbles;
-
-                    const tableVector: @Vector(tableArray.len, u8) = tableArray;
-                    break :block simdUtils.expandVector(tableVector, Chunk.len);
-                };
-
-                const chunk: Chunk = source[0..Chunk.len].*;
-
-                const stringsMask = block: {
-                    const backslashesMask =
-                        simdUtils.compareToBits128_x64(.Eql, chunk, @splat('\\'));
-
-                    const escapedCharsMask = getEscapedCharsMask(backslashesMask);
-
-                    const quotesMask =
-                        simdUtils.compareToBits128_x64(.Eql, chunk, @splat('"'));
-
-                    const unescapedQuotesMask = quotesMask & ~escapedCharsMask;
-
-                    const stringsMask = getBitsPrefixXor(unescapedQuotesMask);
-
-                    break :block if (self.isStringOpened) ~stringsMask else stringsMask;
-                };
-
-                const chunkAnyControlCharsMask = block: {
-                    const chunkLowNibbles = simdUtils.getLowNibblesVector(chunk);
-                    const chunkHighNibbles = simdUtils.getHighNibblesVector(chunk);
-
-                    const chunkMatch = simdUtils.shuffleVector256_x64(
-                        controlCharLowNibbleTable ++ controlCharHighNibbleTable,
-                        chunkLowNibbles ++ chunkHighNibbles,
-                    );
-
-                    const chunkLowNibblesMatch: Chunk = chunkMatch[0..16];
-                    const chunkHighNibblesMatch: Chunk = chunkMatch[16..];
-
-                    break :block simdUtils.compareToBits128_x64(
-                        .NotEql,
-                        chunkLowNibblesMatch & chunkHighNibblesMatch,
-                        @splat(0),
-                    );
-                };
-
-                self.isStringOpened = (stringsMask & 1) != 0;
-
-                const controlCharsMask = chunkAnyControlCharsMask & ~stringsMask;
-                if (controlCharsMask != 0) {
-                    self.controlCharsMask = controlCharsMask;
-
-                    const charIndex = @ctz(controlCharsMask);
-                    return charIndex;
-                }
-            },
+            return NEXT_IN_STRING;
         },
     }
 }
