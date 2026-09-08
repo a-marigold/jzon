@@ -149,10 +149,11 @@ pub fn next(self: *Tokenizer) usize {
                 }
             };
 
+            self.isStringOpened = (stringsMask & 1) == 1;
+
             const controlCharsMask = chunkAnyControlCharsMask & ~stringsMask;
             if (controlCharsMask != 0) {
                 self.controlCharsMask = controlCharsMask;
-                self.isStringOpened = (stringsMask & 1) == 1;
 
                 const charIndex = @ctz(controlCharsMask);
                 return charIndex;
