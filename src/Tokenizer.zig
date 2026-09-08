@@ -52,6 +52,13 @@ pub fn next(self: *Tokenizer) usize {
 
     simd: switch (comptime CPU.arch) {
         .x86_64 => if (comptime simdUtils.getVectorLen_x64()) |vectorLen| {
+            const prevControlCharsMask = self.controlCharsMask;
+            if (prevControlCharsMask != 0) {
+                const charIndex = @ctz(prevControlCharsMask);
+                self.controlCharsMask = omitTrailingBit(prevControlCharsMask);
+                return charIndex;
+            }
+
             // AVX2 (vectorLen == 32) has a specific shuffle vector instruction
             // and uses not all 32 bytes of a SIMD chunk (see the code below)
             const shuffleVectorLen = if (vectorLen == 32) 16 else vectorLen;
@@ -145,13 +152,9 @@ pub fn next(self: *Tokenizer) usize {
             const controlCharsMask = chunkAnyControlCharsMask & ~stringsMask;
             if (controlCharsMask != 0) {
                 const charIndex = @ctz(controlCharsMask);
-
                 self.controlCharsMask = omitTrailingBit(controlCharsMask);
-
                 return charIndex;
-            }
-
-            return NEXT_TRIVIA;
+            } else return NEXT_TRIVIA;
         },
     }
 }
