@@ -89,12 +89,12 @@ pub inline fn shuffleVector512_x64(
 pub inline fn is128BitVector_aarch64() bool {
     return Target.aarch64.featureSetHas(CPU.features, .neon);
 }
+
 /// More preferred than `is128BitVector_aarch64` result.
 ///
 /// Returns `true` only when the `aarch64` target supports vectors with variable length (128-512 bit),
 /// and only when the target supports 32-64 byte shuffles with them.
 pub inline fn isVariableVectorLen_aarch64() bool {
-    // TODO: sve or sve2?
     return Target.aarch64.featureSetHas(CPU.features, .sve2);
 }
 /// Calling this function without checking `isVariableVectorLen_aarch64` is illegal.
@@ -271,21 +271,13 @@ pub inline fn mulCarryless(a: u64, b: u64) u64 {
     }
 }
 
-// TODO: receive `anytype` instead of `len` generic
-
 /// Fills high bits of each `vector` element with 0 and leaves only the low bits.
-pub inline fn getLowNibblesVector(
-    comptime len: comptime_int,
-    vector: @Vector(len, u8),
-) @Vector(len, u8) {
+pub inline fn getLowNibblesVector(vector: anytype) @TypeOf(vector) {
     return vector & @as(@TypeOf(vector), @splat(0b00001111));
 }
 
 /// Moves high bits of each `vector` element to its low bits.
-pub inline fn getHighNibblesVector(
-    comptime len: comptime_int,
-    vector: @Vector(len, u8),
-) @Vector(len, u8) {
+pub inline fn getHighNibblesVector(vector: anytype) @TypeOf(vector) {
     return vector >> @as(@TypeOf(vector), @splat(4));
 }
 

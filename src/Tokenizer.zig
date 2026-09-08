@@ -125,8 +125,8 @@ pub fn next(self: *Tokenizer) usize {
                 };
 
                 const chunkAnyControlCharsMask: u64 = block: {
-                    const chunkLowNibbles = simdUtils.getLowNibblesVector(Chunk.len, chunk);
-                    const chunkHighNibbles = simdUtils.getHighNibblesVector(Chunk.len, chunk);
+                    const chunkLowNibbles = simdUtils.getLowNibblesVector(chunk);
+                    const chunkHighNibbles = simdUtils.getHighNibblesVector(chunk);
 
                     const shuffleVector = comptime switch (vectorLen) {
                         64 => simdUtils.shuffleVector512_x64,
