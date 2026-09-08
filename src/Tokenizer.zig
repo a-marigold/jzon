@@ -37,18 +37,9 @@ pub const NEXT_END: usize =
     @intCast(-1);
 
 /// `next` function returns this value to indicate that
-/// the current SIMD chunk or scalar symbol of `source` is inside a string.
-///
-/// - For scalars this appears when the tokenizer
-/// is currently inside, e.g, `key` of `"key": "string"`.
-///
-/// - Strings in SIMD chunks are skipped by the alghorithm,
-/// and `next` always returns indexes outside strings.
-/// However, JSON inputs sometimes have strings that
-/// are much bigger than one chunk.
-/// For example, chunk length is 64 bytes, but a string contains 200 bytes, and some iterations over this string
-/// are completely inside it, so `next` returns `NEXT_IN_STRING`.
-pub const NEXT_IN_STRING: usize =
+/// the current SIMD chunk or scalar symbol of `source`
+/// is inside a string or trivia (a sequence of whitespaces and other trivial chars).
+pub const NEXT_TRIVIA: usize =
     @intCast(-2);
 
 /// Returns index of the next JSON control character.
@@ -153,13 +144,14 @@ pub fn next(self: *Tokenizer) usize {
 
             const controlCharsMask = chunkAnyControlCharsMask & ~stringsMask;
             if (controlCharsMask != 0) {
-                self.controlCharsMask = controlCharsMask;
-
                 const charIndex = @ctz(controlCharsMask);
+
+                self.controlCharsMask = omitTrailingBit(controlCharsMask);
+
                 return charIndex;
             }
 
-            return NEXT_IN_STRING;
+            return NEXT_TRIVIA;
         },
     }
 }
