@@ -8,8 +8,48 @@ const simdUtils = @import("simdUtils.zig");
 
 const CPU = builtin.cpu;
 
-/// The control characters of JSON.
-const CONTROL_CHARS = [_]u8{ '[', ']', '{', '}', ':', ',' };
+/// Contains `LOW_NIBBLE_TABLE` and `HIGH_NIBBLE_TABLE` constant-arrays,
+/// indexes of which are low or high nibbles of JSON control chars,
+/// and the values at indexes are unique masks.
+///
+/// Values (flags) are allocated so that there is no
+/// a UTF-8 char expect control chars nibbles of which
+/// give `true` when are looked up in the tables.
+///
+/// - `lowNibbles` have 16 elements 'cause the maximum
+/// low nibble of ASCII is `0xF` (decimal `16`).
+///
+/// - `highNibbles` have 8 elements 'cause the maximum
+/// high nibble of ASCII is `0x7` (decimal `7`).
+///
+/// - E.g, char `{` is `0x7B` (decimal 123), and the low nibble `0xB`
+/// perfectly fits `0xF`, and the high `0x7` perfectly fits `0x7`.
+///
+/// Used as a lookup-table vector, from which the vector-shuffle intruction
+/// builds a new vector for searching control characters (see `next` function).
+const CONTROL_CHAR_NIBBLE_TABLES = block: {
+    var lowNibbleTable: [16]u8 = @splat(0);
+    var highNibbleTable: [8]u8 = @splat(0);
+
+    const groups = .{
+        .{ '[', ']', '{', '}' },
+        .{','},
+        .{':'},
+    };
+
+    for (0..groups.len) |index| {
+        const groupFlag = 1 << index;
+        for (groups[index]) |char| {
+            lowNibbleTable[getLowNibble(char)] = groupFlag;
+            highNibbleTable[getHighNibble(char)] = groupFlag;
+        }
+    }
+
+    break :block struct {
+        pub const LOW_NIBBLE_TABLE = lowNibbleTable;
+        pub const HIGH_NIBBLE_TABLE = highNibbleTable;
+    };
+};
 
 /// Doesn't containg the full source.
 /// Instead, it starts with the end of the previously handled part.
@@ -29,7 +69,10 @@ controlCharsMask: u64,
 isStringOpened: bool,
 
 pub fn init(source: []const u8) Tokenizer {
-    return .{ .source = source };
+    return .{
+        .source = source,
+        .isStringOpened = false,
+    };
 }
 
 /// `next` function returns this value to indicate the end of `source`.
@@ -69,18 +112,21 @@ pub fn next(self: *Tokenizer) usize {
 
             // TODO: check in ASM output if LLVM doesn't move tables initialization from loop
 
-            const controlCharTables = comptime genControlCharTables();
+            const controlCharLowNibbleTable: @Vector(Chunk.len, u8) = struct {
+                const TABLE = block: {
+                    const tableArray = CONTROL_CHAR_NIBBLE_TABLES.LOW_NIBBLE_TABLE;
+                    const tableVector: @Vector(tableArray.len, u8) = tableArray;
+                    break :block simdUtils.expandVector(tableVector, Chunk.len);
+                };
+            }.TABLE;
 
-            const controlCharLowNibbleTable = comptime block: {
-                const tableArray = controlCharTables.lowNibbles;
-                const tableVector: @Vector(tableArray.len, u8) = tableArray;
-                break :block simdUtils.expandVector(tableVector, Chunk.len);
-            };
-            const controlCharHighNibbleTable = comptime block: {
-                const tableArray = controlCharTables.highNibbles;
-                const tableVector: @Vector(tableArray.len, u8) = tableArray;
-                break :block simdUtils.expandVector(tableVector, Chunk.len);
-            };
+            const controlCharHighNibbleTable: @Vector(Chunk.len, u8) = struct {
+                const TABLE = block: {
+                    const tableArray = CONTROL_CHAR_NIBBLE_TABLES.HIGH_NIBBLE_TABLE;
+                    const tableVector: @Vector(tableArray.len, u8) = tableArray;
+                    break :block simdUtils.expandVector(tableVector, Chunk.len);
+                };
+            }.TABLE;
 
             const compareToBits = comptime switch (Chunk.len) {
                 64 => simdUtils.compareToBits512_x64,
@@ -157,58 +203,6 @@ pub fn next(self: *Tokenizer) usize {
             } else return NEXT_TRIVIA;
         },
     }
-}
-
-/// Returns `lowNibbles` and `highNibbles` constant-arrays,
-/// indexes of which are low or high nibbles of `CONTROL_CHARS` elements,
-/// and the values at indexes are unique masks.
-///
-/// - `lowNibbles` have 16 elements 'cause the maximum
-/// low nibble of ASCII is `0xF` (decimal `16`).
-///
-/// - `highNibbles` have 8 elements 'cause the maximum
-/// high nibble of ASCII is `0x7` (decimal `7`).
-///
-/// - E.g, char `{` is `0x7B` (decimal 123), and the low nibble `0xB`
-/// perfectly fits `0xF`, and the high `0x7` perfectly fits `0x7`.
-///
-/// Used as a lookup-table vector, from which the vector-shuffle intruction
-/// builds a new vector for searching control characters (see `next` function).
-fn genControlCharTables() struct { lowNibbles: [16]u8, highNibbles: [8]u8 } {
-    // Fill with `0` to ensure there are falsy bits at indexes of non-control chars
-    var lowNibbles: [16]u8 = @splat(0);
-    var highNibbles: [8]u8 = @splat(0);
-
-    // Indexes are high nibbles of control chars
-    const highNibbleFlags = flagsBlock: {
-        // 8 unique flags (00000001, 00000010, ...) for every high nibble
-        const flags: [8]u8 = undefined;
-
-        var flag = 0;
-        for (0..flags.len) |index| {
-            flag = 1 << index;
-
-            flags[index] = flag;
-        }
-
-        break :flagsBlock flags;
-    };
-
-    for (CONTROL_CHARS) |char| {
-        const lowCharNibble = getLowNibble(char);
-        const highCharNibble = getHighNibble(char);
-
-        if (highCharNibble > highNibbleFlags.len) @compileError("Control char is out of ASCII");
-
-        const flag = highNibbleFlags[highCharNibble];
-        lowNibbles[lowCharNibble] |= flag;
-        highNibbles[highCharNibble] |= flag;
-    }
-
-    return .{
-        .lowNibbles = lowNibbles,
-        .highNibbles = highNibbles,
-    };
 }
 
 /// Returns a mask, where 1 are only at bit indexes of escaped chars.
