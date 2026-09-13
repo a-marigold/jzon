@@ -1,5 +1,5 @@
 const Tokenizer = @This();
-
+// TODO: clear docs and comments
 const std = @import("std");
 const math = std.math;
 const Target = std.Target;
@@ -9,45 +9,93 @@ const simdUtils = @import("simdUtils.zig");
 const CPU = builtin.cpu;
 
 /// Contains `LOW_NIBBLE_TABLE` and `HIGH_NIBBLE_TABLE` constant-arrays,
-/// indexes of which are low or high nibbles of JSON control chars,
-/// and the values at indexes are unique masks.
+/// indexes of which are low or high nibbles of JSON control chars and whitespaces,
+/// and the values at indexes are unique flags.
+///
+/// Contains `CONTROL_FLAG` and `WHITESPACE_FLAG` for identifying groups.
+/// E.g to identify does a char 0x16 belong to the whitespace group,
+/// do `((LOW_NIBBLE_TABLE[0x6] | HIGH_NIBBLE_TABLE[0x1]) & WHITESPACE_FLAG) != 0`.
 ///
 /// Values (flags) are allocated so that there is no
 /// a UTF-8 char expect control chars nibbles of which
 /// give `true` when are looked up in the tables.
 ///
 /// - `lowNibbles` have 16 elements 'cause the maximum
-/// low nibble of ASCII is `0xF` (decimal `16`).
+/// low nibble of ASCII is 0xF (decimal `16`).
 ///
 /// - `highNibbles` have 8 elements 'cause the maximum
-/// high nibble of ASCII is `0x7` (decimal `7`).
+/// high nibble of ASCII is 0x7 (decimal `7`).
 ///
-/// - E.g, char `{` is `0x7B` (decimal 123), and the low nibble `0xB`
-/// perfectly fits `0xF`, and the high `0x7` perfectly fits `0x7`.
+/// - E.g, char `{` is 0x7B (decimal 123), and its low and high
+/// nibbles perfectly fit 0xB and 0x7 appropriatly.
 ///
 /// Used as a lookup-table vector, from which the vector-shuffle intruction
 /// builds a new vector for searching control characters (see `next` function).
-const CONTROL_CHAR_NIBBLE_TABLES = block: {
+const JSON_CHAR_TABLES = block: {
     var lowNibbleTable: [16]u8 = @splat(0);
     var highNibbleTable: [8]u8 = @splat(0);
 
-    const groups = .{
+    var groupIndex = 0;
+
+    // Nibbles of chars of every group doesn't intersect,
+    // so it rules out false-positive chars
+    const controlGroups = .{
         .{ '[', ']', '{', '}' },
         .{','},
         .{':'},
     };
 
-    for (0..groups.len) |index| {
-        const groupFlag = 1 << index;
-        for (groups[index]) |char| {
+    const controlFlag = 0;
+
+    while (groupIndex < controlGroups.len) : (groupIndex += 1) {
+        const groupFlag = 1 << groupIndex;
+
+        for (controlGroups[groupIndex]) |char| {
             lowNibbleTable[getLowNibble(char)] = groupFlag;
             highNibbleTable[getHighNibble(char)] = groupFlag;
         }
+
+        controlFlag |= groupFlag;
+    }
+
+    const whitespaceGroups = .{
+        .{ '\n', '\r', '\t' },
+        .{' '},
+    };
+
+    var whitespaceFlag = 0;
+
+    while (groupIndex < whitespaceGroups.len) : (groupIndex += 1) {
+        const groupFlag = 1 << groupIndex;
+
+        for (whitespaceGroups[groupIndex]) |char| {
+            // Bitwise OR `|=` is needed 'cause:
+            // - `\n` (0x0A) and `:` (0x3A) have the same low nibbles,
+            // - ` ` (Space, 0x20) and `,` (0x2C) have the same high nibbles,
+            // - `\r` (0x0D), `]` (0x5D) and `}` (0x7D) have the same low nibbles.
+            //
+            // Doing bitwise OR between flags doesn't cause appearance of false-positive chars.
+            // This is because:
+            // - ` ` (Space) and `,` contain the same high nibbles,
+            // that is, grouping them via bitwise OR can't cause false-positive chars.
+            // - For other chars, `HIGH_NIBBLE_TABLE` contains only unique flags,
+            // while `LOW_NIBBLE_TABLE` contains flags, grouped via bitwise OR.
+            // That is, when it seems like `LOW_NIBBLE_TABLE` returns a valid flag for a false-positive char,
+            // doing bitwise AND with the flag and the `HIGH_NIBBLE_TABLE` result filters out the false-positive char
+
+            lowNibbleTable[getLowNibble(char)] |= groupFlag;
+            highNibbleTable[getHighNibble(char)] |= groupFlag;
+        }
+
+        whitespaceFlag |= groupFlag;
     }
 
     break :block struct {
         pub const LOW_NIBBLE_TABLE = lowNibbleTable;
         pub const HIGH_NIBBLE_TABLE = highNibbleTable;
+
+        pub const CONTROL_FLAG = controlFlag;
+        pub const WHITESPACE_FLAG = whitespaceFlag;
     };
 };
 
@@ -86,10 +134,12 @@ pub const NEXT_TRIVIA: usize =
     @intCast(-2);
 
 /// Returns index of the next JSON control character.
-///
-/// If the tokenizer currently in string, returns `NEXT_IN_STRING`.
-///
+/// If the tokenizer currently in a string
+/// or a sequence of whitespaces (trivia), returns `NEXT_TRIVIA`.
 /// If the JSON `source` ends, returns `NEXT_END`.
+///
+/// List of control chars, indexes of which can be returned:
+/// - `[`, `]`, `{`, `}`, `,`, `:`.
 pub fn next(self: *Tokenizer) usize {
     const source = self.source;
 
@@ -114,7 +164,7 @@ pub fn next(self: *Tokenizer) usize {
 
             const controlCharLowNibbleTable: @Vector(Chunk.len, u8) = struct {
                 const TABLE = block: {
-                    const tableArray = CONTROL_CHAR_NIBBLE_TABLES.LOW_NIBBLE_TABLE;
+                    const tableArray = JSON_CHAR_TABLES.LOW_NIBBLE_TABLE;
                     const tableVector: @Vector(tableArray.len, u8) = tableArray;
                     break :block simdUtils.expandVector(tableVector, Chunk.len);
                 };
@@ -122,7 +172,7 @@ pub fn next(self: *Tokenizer) usize {
 
             const controlCharHighNibbleTable: @Vector(Chunk.len, u8) = struct {
                 const TABLE = block: {
-                    const tableArray = CONTROL_CHAR_NIBBLE_TABLES.HIGH_NIBBLE_TABLE;
+                    const tableArray = JSON_CHAR_TABLES.HIGH_NIBBLE_TABLE;
                     const tableVector: @Vector(tableArray.len, u8) = tableArray;
                     break :block simdUtils.expandVector(tableVector, Chunk.len);
                 };
@@ -281,12 +331,7 @@ inline fn getStartsOfMaskSequences(mask: u64) u64 {
 /// leaves only the last most significant bit of the sequence, *shifted to the left by 1*.
 ///
 /// *shifted to the left* means the resulting mask doesn't contain just ends of sequences,
-/// it contains ends shifted to the left by 1. To get the real ends, just do `result >> 1`.
-///
-/// Example:
-/// For `Mask = 01101111`, `Starts = 00100001`,
-/// returns `10010000` (Ends shifted by 1,
-/// to get the real ends - `10010000 >> 1`, which is `01001000`).
+/// it contains ends shifted to the left by 1. That is the real ends are at `result >> 1`.
 inline fn getEndsOfMaskSequences(mask: u64, startsMask: u64) u64 {
     // E.g `startsMask` is `00000100`, `mask` is `00011100`.
     // Addition carries `startsMask` bits to the left, forming ends of sequences:
@@ -300,18 +345,16 @@ inline fn getEndsOfMaskSequences(mask: u64, startsMask: u64) u64 {
 /// For `01001000` returns `01111000`.
 ///
 /// (Left bits: most significant, Right bits: least significant).
-///
-/// It is the same as `for(.{0,0,0,1,0,0,1,0}, 0..) |el, i| result[i] ^= el;`.
 inline fn getBitsPrefixXor(bits: u64) u64 {
-    // Carryless multiplying by a constant value of N bits, where every bit is `1` (max value),
-    // shifts `mask` N times and does XOR between shifting results,
+    // Carryless multiplication of `bits` by ~0 (every bit is 1)
+    // shifts `mask` as many times as wide the ~0 (64) and does XOR between shifting results,
     // which is a prefix XOR at hardware level
     if (simdUtils.isMulCarrylessSupported())
-        // TODO: maybe only bits at power of two indexes are faster than max value
-        return simdUtils.mulCarryless(bits, comptime math.maxInt(@TypeOf(bits)));
+        return simdUtils.mulCarryless(bits, ~0);
 
     return getBitsPrefixXor_software(bits);
 }
+
 /// A software implementation for cases when
 /// the target CPU lacks of carry-less multiplication for prefix xor.
 inline fn getBitsPrefixXor_software(bits: u64) u64 {
@@ -342,13 +385,16 @@ fn genEvenBitsMask() u64 {
     // results in a sequence of bits where only even bits are set to 1
     return math.maxInt(u64) / 3;
 }
+/// Returns an unique byte-flag with only a single `1` at `bitOffset`.
+fn getByteFlag(bitOffset: comptime_int) u8 {
+    return 0b00000001 << bitOffset;
+}
 
 /// Omits the least significant bit of `bits` integer that is set to 1.
 ///
 /// Always returns 0 for 0.
 ///
-/// Example:
-/// For `00100010` returns `00100000`
+/// Example: For `00100010` returns `00100000`
 ///
 /// (Left bits: most significant, Right bits: least significant).
 inline fn omitTrailingBit(bits: u64) u64 {
