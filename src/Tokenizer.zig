@@ -255,15 +255,24 @@ pub fn next(self: *Tokenizer) usize {
     }
 }
 
-/// Returns a mask, where 1 are only at bit indexes of escaped chars.
+/// Returns a mask, where 1 at bit indexes of chars inside strings.
+///
+/// Ending quotes of strings are set to 0.
+inline fn getStringsMask(anyQuotesMask: u64, backslashesMask: u64) u64 {
+    const unescapedQuotesMask = anyQuotesMask & ~getEscapedCharsMask(backslashesMask);
+
+    // Prefix XOR fills all bits between quotes with 1
+    return getBitsPrefixXor(unescapedQuotesMask);
+}
+
+/// Returns a mask, where 1 is only at bit indexes of chars, escaped inside strings.
 ///
 /// Ignores even backslash sequences (when a backslash escapes another backslash).
-///
 /// That is, if JSON input is `"\\key": "\\\\"`, this function
 /// understands that nothing significant but only backslashes are escaped,
 /// and returns `0`.
 ///
-/// For detailed explanation of this function, see https://arxiv.org/html/1902.08318v7#S3.
+/// For a detailed explanation of this function, see https://arxiv.org/html/1902.08318v7#S3.
 inline fn getEscapedCharsMask(backslashesMask: u64) u64 {
     const evenBitsMask = comptime genEvenBitsMask();
     const oddBitsMask = comptime ~evenBitsMask;
@@ -305,6 +314,7 @@ inline fn getEscapedCharsMask(backslashesMask: u64) u64 {
         // and the bitwise AND below perfectly checks it
         break :block oddBackslashesEnds & evenBitsMask;
     };
+
     return evenEscapedCharsMask | oddEscapedCharsMask;
 }
 
