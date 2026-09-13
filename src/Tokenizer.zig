@@ -99,18 +99,15 @@ const JSON_CHAR_TABLES = block: {
     };
 };
 
-/// Doesn't containg the full source.
+/// Doesn't contain the full source.
 /// Instead, it starts with the end of the previously handled part.
 source: []const u8,
 
 /// Mask, representing positions of control chars in `source`.
 ///
-/// Bits of it which set to 1 only if they contain a control char.
-///
-/// To find the `source` index of a bit from this mask, `@ctz` is used.
-///
-/// Reseted to 0 when control chars of the SIMD chunk are out.
-controlCharsMask: u64,
+/// Bits of it are set to 1 only if they
+/// contain a control char or a start of JSON value.
+controlAndValueCharsMask: u64,
 
 /// Contains `true` when `Tokenizer.controlCharsMask`
 /// ends with an opened string, or `false` if doesn't.
@@ -145,10 +142,10 @@ pub fn next(self: *Tokenizer) usize {
 
     simd: switch (comptime CPU.arch) {
         .x86_64 => if (comptime simdUtils.getVectorLen_x64()) |vectorLen| {
-            const prevControlCharsMask = self.controlCharsMask;
+            const prevControlCharsMask = self.controlAndValueCharsMask;
             if (prevControlCharsMask != 0) {
-                const charIndex = @ctz(prevControlCharsMask);
-                self.controlCharsMask = omitTrailingBit(prevControlCharsMask);
+                const charIndex = getTrailingBitIndex(prevControlCharsMask);
+                self.controlAndValueCharsMask = omitTrailingBit(prevControlCharsMask);
                 return charIndex;
             }
 
@@ -256,8 +253,8 @@ pub fn next(self: *Tokenizer) usize {
             );
 
             if (controlAndValueCharsMask != 0) {
-                const charIndex = @ctz(controlAndValueCharsMask);
-                self.controlCharsMask = omitTrailingBit(controlAndValueCharsMask);
+                const charIndex = getTrailingBitIndex(controlAndValueCharsMask);
+                self.controlAndValueCharsMask = omitTrailingBit(controlAndValueCharsMask);
                 return charIndex;
             } else return NEXT_TRIVIA;
         },
@@ -425,16 +422,20 @@ inline fn getBitsPrefixXor_software(bits: u64) u64 {
 ///
 /// Returns a comptime mask of type `T`, where every bit at even index is `1`.
 fn genEvenBitsMask() u64 {
-    // Division a value where all bits are 1 (max value) by 3
+    // Division of a value where all bits are 1 (max value) by 3
     // results in a sequence of bits where only even bits are set to 1
     return math.maxInt(u64) / 3;
 }
 /// Returns an unique byte-flag with only a single `1` at `bitOffset`.
-fn getByteFlag(bitOffset: comptime_int) u8 {
+fn getByteFlag(comptime bitOffset: comptime_int) u8 {
     return 0b00000001 << bitOffset;
 }
 
-/// Omits the least significant bit of `bits` integer that is set to 1.
+/// Returns index of the first least significant bit which is set to 1.
+inline fn getTrailingBitIndex(bits: u64) u64 {
+    return @ctz(bits);
+}
+/// Omits the first least significant bit which is set to 1.
 ///
 /// Always returns 0 for 0.
 ///
