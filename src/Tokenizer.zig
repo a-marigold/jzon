@@ -305,8 +305,33 @@ inline fn getEscapedCharsMask(backslashesMask: u64) u64 {
         // and the bitwise AND below perfectly checks it
         break :block oddBackslashesEnds & evenBitsMask;
     };
-
     return evenEscapedCharsMask | oddEscapedCharsMask;
+}
+
+/// Returns a mask where every bit of control chars and starts of JSON values is set to 1.
+///
+/// The result doesn't include ends of JSON values.
+///
+/// Any opaque sequence of chars that are not control or whitespaces is treated as a JSON value.
+///
+/// That is, for `"abc"123`, `10000000` is returned, 'cause it is treated as a single value.
+/// The same is for `truefalse123"string"`, `nullfalse` and the like.
+///
+/// `anyControlCharsMask` and `anyWhitespacesMask` can contain
+/// chars inside strings, which are filtered by this function.
+inline fn getControlAndValueCharsMask(anyControlCharsMask: u64, anyWhitespacesMask: u64, stringsMask: u64) u64 {
+    // { "\\\"Nam[{": [ 116,"\\\\" , 234, "true", false ], "t":"\\\"" }
+    // __1111111111_________11111_________11111____________11__11111___ S
+    // 1____________1_1____1_______1____1_______1_______11____1_______1 C = anyC & ~S
+    // _1____________1_1__________1_1____1_______1_____1__1__________1_ W = anyW & ~S
+    // 11___________1111___1______111___11______11_____1111___1______11 CW = C | W
+    // _11___________1111___1______111___11______11_____1111___1______1 V = CW << 1
+    // 1_111111111111_1_1111111111_1_1111_1111111_11111_11_1111111111_1 W = ~W
+    // __1____________1_1___1______1_1____1_______1_____11_1___1______1 V &= W
+
+    const controlAndSpacesMask = (anyControlCharsMask | anyWhitespacesMask) & ~stringsMask;
+
+    return (controlAndSpacesMask << 1) & ~anyWhitespacesMask;
 }
 
 /// For each sequence of `1` bits in an unsigned integer `mask`,
@@ -331,7 +356,7 @@ inline fn getStartsOfMaskSequences(mask: u64) u64 {
 /// leaves only the last most significant bit of the sequence, *shifted to the left by 1*.
 ///
 /// *shifted to the left* means the resulting mask doesn't contain just ends of sequences,
-/// it contains ends shifted to the left by 1. That is the real ends are at `result >> 1`.
+/// but contains ends shifted to the left by 1. That is the real ends are at `result >> 1`.
 inline fn getEndsOfMaskSequences(mask: u64, startsMask: u64) u64 {
     // E.g `startsMask` is `00000100`, `mask` is `00011100`.
     // Addition carries `startsMask` bits to the left, forming ends of sequences:
@@ -348,7 +373,7 @@ inline fn getEndsOfMaskSequences(mask: u64, startsMask: u64) u64 {
 inline fn getBitsPrefixXor(bits: u64) u64 {
     // Carryless multiplication of `bits` by ~0 (every bit is 1)
     // shifts `mask` as many times as wide the ~0 (64) and does XOR between shifting results,
-    // which is a prefix XOR at hardware level
+    // and it's a prefix XOR at hardware level
     if (simdUtils.isMulCarrylessSupported())
         return simdUtils.mulCarryless(bits, ~0);
 
