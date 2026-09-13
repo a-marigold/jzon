@@ -109,9 +109,9 @@ source: []const u8,
 /// contain a control char or a start of JSON value.
 controlAndValueCharsMask: u64,
 
-/// Contains `true` when `Tokenizer.controlCharsMask`
-/// ends with an opened string, or `false` if doesn't.
-isStringOpened: bool,
+/// Contains all bits set to 1 when `Tokenizer.controlAndValueCharsMask`
+/// ends with an opened string, or all bits set to 0 if it doesn't.
+isStringOpened: u64,
 
 pub fn init(source: []const u8) Tokenizer {
     return .{
@@ -142,10 +142,10 @@ pub fn next(self: *Tokenizer) usize {
 
     simd: switch (comptime CPU.arch) {
         .x86_64 => if (comptime simdUtils.getVectorLen_x64()) |vectorLen| {
-            const prevControlCharsMask = self.controlAndValueCharsMask;
-            if (prevControlCharsMask != 0) {
-                const charIndex = getTrailingBitIndex(prevControlCharsMask);
-                self.controlAndValueCharsMask = omitTrailingBit(prevControlCharsMask);
+            const prevControlAndValueCharsMask = self.controlAndValueCharsMask;
+            if (prevControlAndValueCharsMask != 0) {
+                const charIndex = getTrailingBitIndex(prevControlAndValueCharsMask);
+                self.controlAndValueCharsMask = omitTrailingBit(prevControlAndValueCharsMask);
                 return charIndex;
             }
 
@@ -192,9 +192,12 @@ pub fn next(self: *Tokenizer) usize {
                 // For example, `stringsMask` of the current chunk is:
                 // `abc", "def",`
                 // `000111100011`, and it's incorrect - `abc` was opened before.
-                // So invert it (`~stringsMask`):
-                // `111000011100`
-                break :block if (self.isStringOpened) ~stringsMask else stringsMask;
+                // and `self.isStringOpened` contains all bits set to 1.
+                // Do XOR bitween them to invert the mask:
+                // `000111100011` ^
+                // `111111111111` =
+                // `111000011100
+                break :block stringsMask ^ self.isStringOpened;
             };
 
             const lowNibbles = simdUtils.getLowNibblesVector(chunk);
@@ -244,7 +247,7 @@ pub fn next(self: *Tokenizer) usize {
                 else => unreachable,
             };
 
-            self.isStringOpened = (stringsMask & 1) == 1;
+            self.isStringOpened = isStringsMaskOpened(stringsMask);
 
             const controlAndValueCharsMask = getControlAndValueCharsMask(
                 anyControlCharsMask,
@@ -258,6 +261,8 @@ pub fn next(self: *Tokenizer) usize {
                 return charIndex;
             } else return NEXT_TRIVIA;
         },
+
+        .aarch64 => if (comptime simdUtils.isVariableVectorLen_aarch64()) {},
     }
 }
 
@@ -269,6 +274,19 @@ inline fn getStringsMask(anyQuotesMask: u64, backslashesMask: u64) u64 {
 
     // Prefix XOR fills all bits between quotes with 1
     return getBitsPrefixXor(unescapedQuotesMask);
+}
+
+/// If `stringsMask` contains an opened, unclosed string at the end,
+/// returns 64 bits where every bit is set to 1. Otherwise,
+/// returns bits with all with zeros.
+inline fn isStringsMaskOpened(stringsMask: u64) u64 {
+    // If the mask has the most significant bit (MSB) set to 1,
+    // it ends with an opened string.
+    // Shift the most significant bit by 63 to
+    // activate sign extension (`i64` is signed),
+    // and if the sign (MSB) is 1, every bit of 64 bits is set to 1,
+    // but if the sign is 0, every bit is set to 0
+    return @as(i64, @intCast(stringsMask)) >> 63;
 }
 
 /// Returns a mask, where 1 is only at bit indexes of chars, escaped inside strings.
@@ -359,7 +377,7 @@ inline fn getControlAndValueCharsMask(anyControlCharsMask: u64, anyWhitespacesMa
 /// (Left bits: most significant, Right bits: least significant).
 inline fn getStartsOfMaskSequences(mask: u64) u64 {
     // Example:
-    // Mask = `0110111100000000`.
+    // Mask =                  `0110111100000000`.
     // Shifted = `Mask << 1` = `1101111000000000`
     // Inverted = `~Shifted` = `0010000111111111`
     // Result = `Mask & Inverted` = `0110111100000000` &
@@ -454,3 +472,8 @@ inline fn getLowNibble(byte: u8) u8 {
 inline fn getHighNibble(byte: u8) u8 {
     return byte >> 4;
 }
+
+// 11000111 B
+// 11001000 E = B + 1
+// 00110111 E = ~E
+// 00000111 SB = B & E
