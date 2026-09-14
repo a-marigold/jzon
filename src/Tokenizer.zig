@@ -1,10 +1,8 @@
 const Tokenizer = @This();
 // TODO: clear docs and comments
 const std = @import("std");
-const math = std.math;
-const Target = std.Target;
 const builtin = @import("builtin");
-const simdUtils = @import("simdUtils.zig");
+const utils = @import("utils.zig");
 
 const CPU = builtin.cpu;
 
@@ -51,8 +49,8 @@ const JSON_CHAR_TABLES = block: {
         const groupFlag = 1 << groupIndex;
 
         for (controlGroups[groupIndex]) |char| {
-            lowNibbleTable[getLowNibble(char)] = groupFlag;
-            highNibbleTable[getHighNibble(char)] = groupFlag;
+            lowNibbleTable[utils.getLowNibble(char)] = groupFlag;
+            highNibbleTable[utils.getHighNibble(char)] = groupFlag;
         }
 
         controlFlag |= groupFlag;
@@ -83,8 +81,8 @@ const JSON_CHAR_TABLES = block: {
             // That is, when it seems like `LOW_NIBBLE_TABLE` returns a valid flag for a false-positive char,
             // doing bitwise AND with the flag and the `HIGH_NIBBLE_TABLE` result filters out the false-positive char
 
-            lowNibbleTable[getLowNibble(char)] |= groupFlag;
-            highNibbleTable[getHighNibble(char)] |= groupFlag;
+            lowNibbleTable[utils.getLowNibble(char)] |= groupFlag;
+            highNibbleTable[utils.getHighNibble(char)] |= groupFlag;
         }
 
         whitespaceFlag |= groupFlag;
@@ -153,11 +151,11 @@ pub fn next(self: *Tokenizer) usize {
     const source = self.source;
 
     simd: switch (comptime CPU.arch) {
-        .x86_64 => if (comptime simdUtils.getVectorLen_x64()) |vectorLen| {
+        .x86_64 => if (comptime utils.simd.getVectorLen_x64()) |vectorLen| {
             const prevControlAndValueCharsMask = self.controlAndValueCharsMask;
             if (prevControlAndValueCharsMask != 0) {
-                const charIndex = getTrailingBitIndex(prevControlAndValueCharsMask);
-                self.controlAndValueCharsMask = omitTrailingBit(prevControlAndValueCharsMask);
+                const charIndex = utils.getTrailingBitIndex(prevControlAndValueCharsMask);
+                self.controlAndValueCharsMask = utils.omitTrailingBit(prevControlAndValueCharsMask);
                 return charIndex;
             }
 
@@ -175,7 +173,7 @@ pub fn next(self: *Tokenizer) usize {
                 const TABLE = block: {
                     const tableArray = JSON_CHAR_TABLES.LOW_NIBBLE_TABLE;
                     const tableVector: @Vector(tableArray.len, u8) = tableArray;
-                    break :block simdUtils.expandVector(tableVector, Chunk.len);
+                    break :block utils.simd.expandVector(tableVector, Chunk.len);
                 };
             }.TABLE;
 
@@ -183,13 +181,13 @@ pub fn next(self: *Tokenizer) usize {
                 const TABLE = block: {
                     const tableArray = JSON_CHAR_TABLES.HIGH_NIBBLE_TABLE;
                     const tableVector: @Vector(tableArray.len, u8) = tableArray;
-                    break :block simdUtils.expandVector(tableVector, Chunk.len);
+                    break :block utils.simd.expandVector(tableVector, Chunk.len);
                 };
             }.TABLE;
 
             const compareToBits = comptime switch (Chunk.len) {
-                64 => simdUtils.compareToBits512_x64,
-                16 => simdUtils.compareToBits128_x64,
+                64 => utils.simd.compareToBits512_x64,
+                16 => utils.simd.compareToBits128_x64,
                 else => unreachable,
             };
 
@@ -206,16 +204,15 @@ pub fn next(self: *Tokenizer) usize {
                 break :block .{ result.stringsMask, result.isStringEndedWithEscaping };
             };
 
-            const lowNibbles = simdUtils.getLowNibblesVector(chunk);
-            const highNibbles = simdUtils.getHighNibblesVector(chunk);
+            const lowNibbles = utils.simd.getLowNibblesVector(chunk);
+            const highNibbles = utils.simd.getHighNibblesVector(chunk);
 
             const anyControlCharsMask: u64, const anyWhitespacesMask: u64 = block: switch (comptime vectorLen) {
                 64 => {
                     const lowNibblesMatch =
-                        simdUtils.shuffleVector512_x64(controlCharLowNibbleTable, lowNibbles);
+                        utils.simd.shuffleVector512_x64(controlCharLowNibbleTable, lowNibbles);
                     const highNibblesMatch =
-                        simdUtils.shuffleVector512_x64(controlCharHighNibbleTable, highNibbles);
-
+                        utils.simd.shuffleVector512_x64(controlCharHighNibbleTable, highNibbles);
                     const nibblesMatch = lowNibblesMatch & highNibblesMatch;
 
                     break :block .{
@@ -225,7 +222,7 @@ pub fn next(self: *Tokenizer) usize {
                     };
                 },
                 32 => {
-                    const nibblesMatchHalves = simdUtils.shuffleVector256_x64(
+                    const nibblesMatchHalves = utils.simd.shuffleVector256_x64(
                         controlCharLowNibbleTable ++ controlCharHighNibbleTable,
                         lowNibbles ++ highNibbles,
                     );
@@ -239,9 +236,9 @@ pub fn next(self: *Tokenizer) usize {
                 },
                 16 => {
                     const lowNibblesMatch =
-                        simdUtils.shuffleVector128_x64(controlCharLowNibbleTable, lowNibbles);
+                        utils.simd.shuffleVector128_x64(controlCharLowNibbleTable, lowNibbles);
                     const highNibblesMatch =
-                        simdUtils.shuffleVector128_x64(controlCharHighNibbleTable, highNibbles);
+                        utils.simd.shuffleVector128_x64(controlCharHighNibbleTable, highNibbles);
 
                     const nibblesMatch = lowNibblesMatch & highNibblesMatch;
 
@@ -263,13 +260,13 @@ pub fn next(self: *Tokenizer) usize {
             );
 
             if (controlAndValueCharsMask != 0) {
-                const charIndex = getTrailingBitIndex(controlAndValueCharsMask);
-                self.controlAndValueCharsMask = omitTrailingBit(controlAndValueCharsMask);
+                const charIndex = utils.getTrailingBitIndex(controlAndValueCharsMask);
+                self.controlAndValueCharsMask = utils.omitTrailingBit(controlAndValueCharsMask);
                 return charIndex;
             } else return NEXT_TRIVIA;
         },
 
-        .aarch64 => if (comptime simdUtils.isVariableVectorLen_aarch64()) {},
+        .aarch64 => if (comptime utils.simd.isVariableVectorLen_aarch64()) {},
     }
 }
 
@@ -296,7 +293,7 @@ inline fn getStringsMask(
     const unescapedQuotesMask = anyQuotesMask & ~escapedCharsMask;
 
     // Prefix XOR fills all bits between quotes with 1
-    const stringsMask = getBitsPrefixXor(unescapedQuotesMask);
+    const stringsMask = utils.getBitsPrefixXor(unescapedQuotesMask);
     // If the prev SIMD-chunk has an unclosed string,
     // `isPrevStringOpened` contains all bits set to 1,
     // and XOR the current mask with it inverts strings
@@ -315,6 +312,7 @@ inline fn isStringsMaskOpened(stringsMask: u64) u64 {
     // activate sign extension (`i64` is signed),
     // and if the sign (MSB) is 1, every bit of 64 bits is set to 1,
     // but if the sign is 0, every bit is set to 0
+
     return @as(i64, @intCast(stringsMask)) >> 63;
 }
 
@@ -333,11 +331,11 @@ inline fn getEscapedCharsMask(
     escapedCharsMask: u64,
     isStringEndedWithEscaping: @FieldType(Tokenizer, "isStringEndedWithEscaping"),
 } {
-    const evenBitsMask = comptime genEvenBitsMask();
+    const evenBitsMask = comptime utils.genEvenBitsMask();
     const oddBitsMask = comptime ~evenBitsMask;
 
     const backslashStarts = block: {
-        const anyBackslashStarts = getStartsOfMaskSequences(backslashMask);
+        const anyBackslashStarts = utils.getStartsOfMaskSequences(backslashMask);
 
         // If `backslashMask` starts with a sequence, which in turn starts
         // straight from the first mask bit (`anyBacksMask & 1`),
@@ -347,7 +345,7 @@ inline fn getEscapedCharsMask(
         const correctedBackslashMask =
             backslashMask ^ ((anyBackslashStarts & 1) * isPrevStringEndedWithEscaping);
 
-        break :block getStartsOfMaskSequences(correctedBackslashMask);
+        break :block utils.getStartsOfMaskSequences(correctedBackslashMask);
     };
 
     // Mask of backslash sequences starting with an even bit index,
@@ -358,7 +356,7 @@ inline fn getEscapedCharsMask(
 
         // Contains ends of backslash sequences, starting with an even bit index,
         // and the ends are shifted to the left by 1
-        const evenBackslashEnds = getEndsOfMaskSequences(
+        const evenBackslashEnds = utils.getEndsOfMaskSequences(
             backslashMask,
             evenBackslashStarts,
         );
@@ -375,7 +373,7 @@ inline fn getEscapedCharsMask(
 
         // Contains ends of backslash sequences, starting with an even bit index,
         // and the ends are shifted to the left by 1
-        const oddBackslashEnds = getEndsOfMaskSequences(
+        const oddBackslashEnds = utils.getEndsOfMaskSequences(
             backslashMask,
             oddBackslashStarts,
         );
@@ -419,121 +417,10 @@ inline fn getControlAndValueCharsMask(anyControlCharsMask: u64, anyWhitespacesMa
 }
 
 inline fn isBackslashMaskEndedWithEscaping(backslashMask: u64) u64 {
-    const endBackslashCount = getLeadingBitIndex(~backslashMask);
+    const endBackslashCount = utils.getLeadingBitIndex(~backslashMask);
     // If the count is odd, return 1 (`oddNum & 1 == 1`)
     // Otherwise, return `evenNum & 1 == 0`
     return endBackslashCount & 1;
-}
-
-/// For each sequence of `1` bits in an unsigned integer `mask`,
-/// leaves only the first least significant bit of the sequence.
-///
-/// Example:
-/// For `01101111` returns `00100001`
-///
-/// (Left bits: most significant, Right bits: least significant).
-inline fn getStartsOfMaskSequences(mask: u64) u64 {
-    // Example:
-    // Mask =                  `0110111100000000`.
-    // Shifted = `Mask << 1` = `1101111000000000`
-    // Inverted = `~Shifted` = `0010000111111111`
-    // Result = `Mask & Inverted` = `0110111100000000` &
-    //                              `0010000111111111` =
-    //                              `0010000100000000`
-    return mask & ~(mask << 1);
-}
-
-/// For each sequence of `1` bits in an unsigned integer `mask`,
-/// leaves only the last most significant bit of the sequence, *shifted to the left by 1*.
-///
-/// *shifted to the left* means the resulting mask doesn't contain just ends of sequences,
-/// but contains ends shifted to the left by 1. That is the real ends are at `result >> 1`.
-inline fn getEndsOfMaskSequences(mask: u64, startsMask: u64) u64 {
-    // E.g `startsMask` is `00000100`, `mask` is `00011100`.
-    // Addition carries `startsMask` bits to the left, forming ends of sequences:
-    // `00000100` + `00111000` = `01000000`
-    return startsMask + mask;
-}
-
-/// Does prefix XOR for bits in `bits`.
-///
-/// Example:
-/// For `01001000` returns `01111000`.
-///
-/// (Left bits: most significant, Right bits: least significant).
-inline fn getBitsPrefixXor(bits: u64) u64 {
-    // Carryless multiplication of `bits` by ~0 (every bit is 1)
-    // shifts `mask` as many times as wide the ~0 (64) and does XOR between shifting results,
-    // and it's a prefix XOR at hardware level
-    if (simdUtils.isMulCarrylessSupported())
-        return simdUtils.mulCarryless(bits, ~0);
-
-    return getBitsPrefixXor_software(bits);
-}
-
-/// A software implementation for cases when
-/// the target CPU lacks of carry-less multiplication for prefix xor.
-inline fn getBitsPrefixXor_software(bits: u64) u64 {
-    const maxOffset = @typeInfo(u64).int.bits / 2;
-
-    var result = bits;
-
-    comptime var offset = 0;
-
-    comptime var iteration = 0;
-    inline while (offset <= maxOffset) : (iteration += 1) {
-        offset = 1 << iteration;
-
-        // Shift the prev result on `offset` (a power of two)
-        // and do XOR between it and just the prev result
-        // to get prefix XOR
-        result ^= result << offset;
-    }
-
-    return result;
-}
-
-/// Checks if `T` is unsigned.
-///
-/// Returns a comptime mask of type `T`, where every bit at even index is `1`.
-fn genEvenBitsMask() u64 {
-    // Division of a value where all bits are 1 (max value) by 3
-    // results in a sequence of bits where only even bits are set to 1
-    return math.maxInt(u64) / 3;
-}
-
-/// Returns an unique byte-flag with only a single `1` at `bitOffset`.
-fn getByteFlag(comptime bitOffset: comptime_int) u8 {
-    return 0b00000001 << bitOffset;
-}
-
-/// Returns index of the first least significant bit which is set to 1.
-inline fn getTrailingBitIndex(bits: u64) u64 {
-    return @ctz(bits);
-}
-/// Returns index of the first most significant bit which is set to 1.
-inline fn getLeadingBitIndex(bits: u64) u64 {
-    return @clz(bits);
-}
-
-/// Omits the first least significant bit which is set to 1.
-///
-/// Always returns 0 for 0.
-///
-/// Example: For `00100010` returns `00100000`
-///
-/// (Left bits: most significant, Right bits: least significant).
-inline fn omitTrailingBit(bits: u64) u64 {
-    return bits & (bits - 1);
-}
-
-/// Fills the high `byte` bits with 0, leaving only the low nibble.
-inline fn getLowNibble(byte: u8) u8 {
-    return byte & 0b00001111;
-}
-/// Moves the high `byte` bits to the low bits, filling the previous place of high bits with 0.
-inline fn getHighNibble(byte: u8) u8 {
-    return byte >> 4;
 }
 
 // TODO: new algo for escaped chars
