@@ -202,7 +202,6 @@ pub fn next(self: *Tokenizer) usize {
 
             const lowNibbles = simdUtils.getLowNibblesVector(chunk);
             const highNibbles = simdUtils.getHighNibblesVector(chunk);
-
             const anyControlCharsMask: u64, const anyWhitespacesMask: u64 = block: switch (comptime vectorLen) {
                 64 => {
                     const lowNibblesMatch =
@@ -368,6 +367,14 @@ inline fn getControlAndValueCharsMask(anyControlCharsMask: u64, anyWhitespacesMa
     return (controlAndSpacesMask << 1) & ~anyWhitespacesMask;
 }
 
+inline fn isBackslashesMaskEndedWithEscaping(backslashesMask: u64) u64 {
+    const endBackslashesCount = getLeadingBitIndex(~backslashesMask);
+
+    // If the count is odd, return 1 (`oddNum & 1 == 1`)
+    // Otherwise, return `evenNum & 1 == 0`
+    return endBackslashesCount & 1;
+}
+
 /// For each sequence of `1` bits in an unsigned integer `mask`,
 /// leaves only the first least significant bit of the sequence.
 ///
@@ -453,6 +460,11 @@ fn getByteFlag(comptime bitOffset: comptime_int) u8 {
 inline fn getTrailingBitIndex(bits: u64) u64 {
     return @ctz(bits);
 }
+/// Returns index of the first most significant bit which is set to 1.
+inline fn getLeadingBitIndex(bits: u64) u64 {
+    return @clz(bits);
+}
+
 /// Omits the first least significant bit which is set to 1.
 ///
 /// Always returns 0 for 0.
