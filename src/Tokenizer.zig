@@ -154,7 +154,7 @@ pub fn next(self: *Tokenizer) usize {
         .x86_64 => if (comptime utils.simd.getVectorLen_x64()) |vectorLen| {
             const prevControlAndValueCharsMask = self.controlAndValueCharsMask;
             if (prevControlAndValueCharsMask != 0) {
-                const charIndex = utils.getTrailingBitIndex(prevControlAndValueCharsMask);
+                const charIndex = utils.getTrailBitIndex(prevControlAndValueCharsMask);
                 self.controlAndValueCharsMask = utils.omitTrailingBit(prevControlAndValueCharsMask);
                 return charIndex;
             }
@@ -260,7 +260,7 @@ pub fn next(self: *Tokenizer) usize {
             );
 
             if (controlAndValueCharsMask != 0) {
-                const charIndex = utils.getTrailingBitIndex(controlAndValueCharsMask);
+                const charIndex = utils.getTrailBitIndex(controlAndValueCharsMask);
                 self.controlAndValueCharsMask = utils.omitTrailingBit(controlAndValueCharsMask);
                 return charIndex;
             } else return NEXT_TRIVIA;
@@ -417,7 +417,7 @@ inline fn getControlAndValueCharsMask(anyControlCharsMask: u64, anyWhitespacesMa
 }
 
 inline fn isBackslashMaskEndedWithEscaping(backslashMask: u64) u64 {
-    const endBackslashCount = utils.getLeadingBitIndex(~backslashMask);
+    const endBackslashCount = utils.getLeadBitIndex(~backslashMask);
     // If the count is odd, return 1 (`oddNum & 1 == 1`)
     // Otherwise, return `evenNum & 1 == 0`
     return endBackslashCount & 1;

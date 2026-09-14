@@ -374,11 +374,11 @@ pub fn getByteFlag(comptime bitOffset: comptime_int) u8 {
 }
 
 /// Returns index of the first least significant bit which is set to 1.
-pub inline fn getTrailingBitIndex(bits: u64) u64 {
+pub inline fn getTrailBitIndex(bits: u64) u64 {
     return @ctz(bits);
 }
 /// Returns index of the first most significant bit which is set to 1.
-pub inline fn getLeadingBitIndex(bits: u64) u64 {
+pub inline fn getLeadBitIndex(bits: u64) u64 {
     return @clz(bits);
 }
 
@@ -389,7 +389,7 @@ pub inline fn getLeadingBitIndex(bits: u64) u64 {
 /// Example: For `00100010` returns `00100000`
 ///
 /// (Left bits: most significant, Right bits: least significant).
-pub inline fn omitTrailingBit(bits: u64) u64 {
+pub inline fn omitTrailBit(bits: u64) u64 {
     return bits & (bits - 1);
 }
 
