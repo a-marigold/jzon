@@ -105,13 +105,24 @@ source: []const u8,
 
 /// Mask, representing positions of control chars in `source`.
 ///
-/// Bits of it are set to 1 only if they
+/// Bits of it are set to `1` only if they
 /// contain a control char or a start of JSON value.
 controlAndValueCharsMask: u64,
 
-/// Contains all bits set to 1 when `Tokenizer.controlAndValueCharsMask`
-/// ends with an opened string, or all bits set to 0 if it doesn't.
+/// Contains all bits set to `1` when the current SIMD-chunk
+/// ends with an unclosed string, or all bits set to `0` if it doesn't.
 isStringOpened: u64,
+
+/// Contains number `1` when the current SIMD-chunk has
+/// an unclosed string and the last char of this string
+/// has a backslash, escaping a char of the next SIMD-chunk.
+///
+/// Contains `0` if the current SIMD-chunk
+/// doesn't end an unclosed string or the unclosed string
+/// doesn't have a backslash like that.
+///
+/// Used to handle string escaping accros SIMD-chunks.
+isStringEndedWithEscaping: u64,
 
 pub fn init(source: []const u8) Tokenizer {
     return .{
@@ -183,11 +194,17 @@ pub fn next(self: *Tokenizer) usize {
 
             const chunk: Chunk = source[0..Chunk.len].*;
 
-            const stringsMask: u64 = block: {
+            const stringsMask, const isStringEndedWithEscaping = block: {
                 const anyQuotesMask: u64 = compareToBits(.Eql, chunk, @splat('"'));
                 const backslashesMask: u64 = compareToBits(.Eql, chunk, @splat('\\'));
 
-                const stringsMask = getStringsMask(anyQuotesMask, backslashesMask);
+                const stringsMask, const isStringEndedWithEscaping = maskBlock: {
+                    const result = getStringsMask(
+                        anyQuotesMask,
+                        backslashesMask,
+                    );
+                    break :maskBlock .{ result.stringsMask, result.isStirngEndedWithEscaping };
+                };
 
                 // For example, `stringsMask` of the current chunk is:
                 // `abc", "def",`
@@ -197,11 +214,17 @@ pub fn next(self: *Tokenizer) usize {
                 // `000111100011` ^
                 // `111111111111` =
                 // `111000011100
-                break :block stringsMask ^ self.isStringOpened;
+                break :block .{
+                    // TODO: abstract from it
+                    stringsMask ^ self.isStringOpened,
+
+                    isStringEndedWithEscaping,
+                };
             };
 
             const lowNibbles = simdUtils.getLowNibblesVector(chunk);
             const highNibbles = simdUtils.getHighNibblesVector(chunk);
+
             const anyControlCharsMask: u64, const anyWhitespacesMask: u64 = block: switch (comptime vectorLen) {
                 64 => {
                     const lowNibblesMatch =
@@ -247,6 +270,7 @@ pub fn next(self: *Tokenizer) usize {
             };
 
             self.isStringOpened = isStringsMaskOpened(stringsMask);
+            self.isStringEndedWithEscaping = isStringEndedWithEscaping;
 
             const controlAndValueCharsMask = getControlAndValueCharsMask(
                 anyControlCharsMask,
@@ -268,11 +292,24 @@ pub fn next(self: *Tokenizer) usize {
 /// Returns a mask, where 1 at bit indexes of chars inside strings.
 ///
 /// Bits of ending quotes of strings are set to 0.
-inline fn getStringsMask(anyQuotesMask: u64, backslashesMask: u64) u64 {
-    const unescapedQuotesMask = anyQuotesMask & ~getEscapedCharsMask(backslashesMask);
+inline fn getStringsMask(anyQuotesMask: u64, backslashesMask: u64, isPrevStringEndedWithEscaping: u64) struct {
+    stringsMask: u64,
+    isStringEndedWithEscaping: @FieldType(Tokenizer, "isStringEndedWithEscaping"),
+} {
+    const escapedCharsMask, const isStringEndedWithEscaping = block: {
+        const result = getEscapedCharsMask(
+            backslashesMask,
+            isPrevStringEndedWithEscaping,
+        );
+        break :block .{ result.escapedCharsMask, result.isStringEndedWithEscaping };
+    };
+
+    const unescapedQuotesMask = anyQuotesMask & ~escapedCharsMask;
 
     // Prefix XOR fills all bits between quotes with 1
-    return getBitsPrefixXor(unescapedQuotesMask);
+    const stringsMask = getBitsPrefixXor(unescapedQuotesMask);
+
+    return .{ .stringsMask = stringsMask, .isStringEndedWithEscaping = isStringEndedWithEscaping };
 }
 
 /// If `stringsMask` contains an opened, unclosed string at the end,
@@ -288,24 +325,44 @@ inline fn isStringsMaskOpened(stringsMask: u64) u64 {
     return @as(i64, @intCast(stringsMask)) >> 63;
 }
 
-/// Returns a mask, where 1 is only at bit indexes of chars, escaped inside strings.
+/// Returns a struct:
+/// - `escapedCharsMask` is a mask where 1 is only at bit indexes of chars, escaped inside strings.
+/// - `isStringEndedWithEscaping` is the same as `Tokenizer.isStringEndedWithEscaping`, but for the current chunk.
 ///
 /// Ignores even backslash sequences (when a backslash escapes another backslash).
 /// That is, if JSON input is `"\\key": "\\\\"`, this function
 /// understands that nothing significant but only backslashes are escaped,
 /// and returns `0`.
-///
-/// For a detailed explanation of this function, see https://arxiv.org/html/1902.08318v7#S3.
-inline fn getEscapedCharsMask(backslashesMask: u64) u64 {
+inline fn getEscapedCharsMask(
+    backslashesMask: u64,
+    isStringEndedWithEscaping: @FieldType(Tokenizer, "isStringEndedWithEscaping"),
+) struct {
+    escapedCharsMask: u64,
+    isStringEndedWithEscaping: @FieldType(Tokenizer, "isStringEndedWithEscaping"),
+} {
     const evenBitsMask = comptime genEvenBitsMask();
     const oddBitsMask = comptime ~evenBitsMask;
 
-    const backslashesStarts = getStartsOfMaskSequences(backslashesMask);
+    const backslashesStarts = block: {
+        const anyBackslashesStarts = getStartsOfMaskSequences(backslashesMask);
+
+        // If `backslashesMask` starts with a sequence, which in turn starts
+        // straight from the first mask bit (`anyBacksMask & 1`),
+        // and if the prev string ends with escaping (isStringEndedWithEscaping),
+        // do `backsMask ^ 1` to flip the first bit (that is, to escape the first char).
+        // Otherwise, do `backsMask ^ 0` and get unchanged `backsMask`.
+        const correctedBackslashes =
+            backslashesMask ^ ((anyBackslashesStarts & 1) * isStringEndedWithEscaping);
+
+        break :block getStartsOfMaskSequences(correctedBackslashes);
+    };
+
+    // TODO: rename 'backslashes' to 'backslash'
 
     // Mask of backslash sequences starting with an even bit index,
     // containing only odd amounts of backslashes
     const evenEscapedCharsMask = block: {
-        // Leave only backslashes starting at even indexes
+        // Get only backslashes starting at even indexes
         const evenBackslashesStarts = backslashesStarts & evenBitsMask;
 
         // Contains ends of backslash sequences, starting with an even bit index,
@@ -322,7 +379,7 @@ inline fn getEscapedCharsMask(backslashesMask: u64) u64 {
     };
 
     const oddEscapedCharsMask = block: {
-        // Leave only backslashes starting at odd indexes
+        // Get only backslashes starting at odd indexes
         const oddBackslashesStarts = backslashesStarts & oddBitsMask;
 
         // Contains ends of backslash sequences, starting with an even bit index,
@@ -338,7 +395,10 @@ inline fn getEscapedCharsMask(backslashesMask: u64) u64 {
         break :block oddBackslashesEnds & evenBitsMask;
     };
 
-    return evenEscapedCharsMask | oddEscapedCharsMask;
+    return .{
+        .escapedCharsMask = evenEscapedCharsMask | oddEscapedCharsMask,
+        .isStringEndedWithEscaping = isBackslashesMaskEndedWithEscaping(backslashesMask),
+    };
 }
 
 /// Returns a mask where every bit of control chars and starts of JSON values is set to 1.
@@ -358,9 +418,9 @@ inline fn getControlAndValueCharsMask(anyControlCharsMask: u64, anyWhitespacesMa
     // 1____________1_1____1_______1____1_______1_______11____1_______1 C = anyC & ~S
     // _1____________1_1__________1_1____1_______1_____1__1__________1_ W = anyW & ~S
     // 11___________1111___1______111___11______11_____1111___1______11 CW = C | W
-    // _11___________1111___1______111___11______11_____1111___1______1 V = CW << 1
+    // _11___________1111___1______111___11______11_____1111___1______1 CV = CW << 1
     // 1_111111111111_1_1111111111_1_1111_1111111_11111_11_1111111111_1 W = ~W
-    // __1____________1_1___1______1_1____1_______1_____11_1___1______1 V &= W
+    // __1____________1_1___1______1_1____1_______1_____11_1___1______1 CV &= W
 
     const controlAndSpacesMask = (anyControlCharsMask | anyWhitespacesMask) & ~stringsMask;
 
@@ -485,7 +545,7 @@ inline fn getHighNibble(byte: u8) u8 {
     return byte >> 4;
 }
 
-// 11000111 B
-// 11001000 E = B + 1
-// 00110111 E = ~E
-// 00000111 SB = B & E
+// TODO: new algo for escaped chars
+
+// unsigned __int128 add_result = (unsigned __int128)corrected_B + corrected_starts;
+// uint64_t escapes = ((uint64_t)add_result) ^ corrected_B;
