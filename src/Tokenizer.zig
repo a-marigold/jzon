@@ -297,9 +297,9 @@ inline fn getStringsMask(
     // If the prev SIMD-chunk has an unclosed string,
     // `isPrevStringOpened` contains all bits set to 1,
     // and XOR the current mask with it inverts strings
-    const correctedStringsMask = stringsMask ^ isPrevStringOpened;
+    const actualStringsMask = stringsMask ^ isPrevStringOpened;
 
-    return .{ .stringsMask = correctedStringsMask, .isStringEndedWithEscaping = isStringEndedWithEscaping };
+    return .{ .stringsMask = actualStringsMask, .isStringEndedWithEscaping = isStringEndedWithEscaping };
 }
 
 /// If `stringsMask` contains an opened, unclosed string at the end,
@@ -334,25 +334,23 @@ inline fn getEscapedCharsMask(
     const evenBitsMask = comptime utils.genEvenBitsMask();
     const oddBitsMask = comptime ~evenBitsMask;
 
-    const backslashStarts = block: {
-        const anyBackslashStarts = utils.getStartsOfMaskSequences(backslashMask);
+    const backslashStarts = utils.getStartsOfMaskSequences(backslashMask);
 
-        // If `backslashMask` starts with a sequence, which in turn starts
-        // straight from the first mask bit (`anyBacksMask & 1`),
-        // and if the prev string ends with escaping (isStringEndedWithEscaping),
-        // do `backsMask ^ 1` to flip the first bit (that is, to escape the first char).
-        // Otherwise, do `backsMask ^ 0` and get unchanged `backsMask`.
-        const correctedBackslashMask =
-            backslashMask ^ ((anyBackslashStarts & 1) * isPrevStringEndedWithEscaping);
+    // If `backslashMask` starts with a sequence, which in turn starts
+    // straight from the first mask bit (`anyBacksMask & 1`),
+    // and if the prev string ends with escaping (isPrevStringEndedWithEscaping),
+    // do `backsMask ^ 1` to flip the first bit (that is, to escape the first char).
+    // Otherwise, do `backsMask ^ 0` and get unchanged `backsMask`.
+    const actualBackslashMask =
+        backslashMask ^ ((backslashStarts & 1) * isPrevStringEndedWithEscaping);
 
-        break :block utils.getStartsOfMaskSequences(correctedBackslashMask);
-    };
+    const actualBackslashStarts = utils.getStartsOfMaskSequences(actualBackslashMask);
 
     // Mask of backslash sequences starting with an even bit index,
     // containing only odd amounts of backslashes
     const evenEscapedCharsMask = block: {
         // Get only backslashes starting at even indexes
-        const evenBackslashStarts = backslashStarts & evenBitsMask;
+        const evenBackslashStarts = actualBackslashStarts & evenBitsMask;
 
         // Contains ends of backslash sequences, starting with an even bit index,
         // and the ends are shifted to the left by 1
@@ -369,7 +367,7 @@ inline fn getEscapedCharsMask(
 
     const oddEscapedCharsMask = block: {
         // Get only backslashes starting at odd indexes
-        const oddBackslashStarts = backslashStarts & oddBitsMask;
+        const oddBackslashStarts = actualBackslashStarts & oddBitsMask;
 
         // Contains ends of backslash sequences, starting with an even bit index,
         // and the ends are shifted to the left by 1
@@ -386,7 +384,7 @@ inline fn getEscapedCharsMask(
 
     return .{
         .escapedCharsMask = evenEscapedCharsMask | oddEscapedCharsMask,
-        .isStringEndedWithEscaping = isBackslashMaskEndedWithEscaping(backslashMask),
+        .isStringEndedWithEscaping = isBackslashMaskEndedWithEscaping(actualBackslashMask),
     };
 }
 
@@ -415,15 +413,18 @@ inline fn getControlAndValueCharsMask(anyControlCharsMask: u64, anyWhitespacesMa
 
     return (controlAndSpacesMask << 1) & ~anyWhitespacesMask;
 }
+/// `actualBackslashMask` must be already actualized via
+/// handling `Tokenizer.isStringEndedWithEscaping`.
+///
+/// Returns 1 when `backslashMask` ends with a backslash
+/// which escapes a char of the next SIMD-chunk.
+/// Otherwise, returns 0.
+inline fn isBackslashMaskEndedWithEscaping(actualBackslashMask: u64) u64 {
+    // Amount of backslashes that are at the very end
+    // of the mask and that touch its highest bit
+    const endBackslashCount = utils.getLeadBitIndex(~actualBackslashMask);
 
-inline fn isBackslashMaskEndedWithEscaping(backslashMask: u64) u64 {
-    const endBackslashCount = utils.getLeadBitIndex(~backslashMask);
     // If the count is odd, return 1 (`oddNum & 1 == 1`)
-    // Otherwise, return `evenNum & 1 == 0`
+    // Otherwise, return 0 (`evenNum & 1 == 0`)
     return endBackslashCount & 1;
 }
-
-// TODO: new algo for escaped chars
-
-// unsigned __int128 add_result = (unsigned __int128)corrected_B + corrected_starts;
-// uint64_t escapes = ((uint64_t)add_result) ^ corrected_B;
