@@ -115,11 +115,11 @@ isStringOpened: u64,
 
 /// Contains number `1` when the current SIMD-chunk has
 /// an unclosed string and the last char of this string
-/// has a backslash, escaping a char of the next SIMD-chunk.
+/// has a backslash which escapes a char of the next SIMD-chunk.
 ///
 /// Contains `0` if the current SIMD-chunk
-/// doesn't end an unclosed string or the unclosed string
-/// doesn't have a backslash like that.
+/// doesn't end with an unclosed string or
+/// the unclosed string doesn't have a backslash like that.
 ///
 /// Used to handle string escaping accros SIMD-chunks.
 isStringEndedWithEscaping: u64,
@@ -127,7 +127,8 @@ isStringEndedWithEscaping: u64,
 pub fn init(source: []const u8) Tokenizer {
     return .{
         .source = source,
-        .isStringOpened = false,
+        .isStringOpened = 0,
+        .isStringEndedWithEscaping = 0,
     };
 }
 
@@ -198,28 +199,11 @@ pub fn next(self: *Tokenizer) usize {
                 const anyQuotesMask: u64 = compareToBits(.Eql, chunk, @splat('"'));
                 const backslashMask: u64 = compareToBits(.Eql, chunk, @splat('\\'));
 
-                const stringsMask, const isStringEndedWithEscaping = maskBlock: {
-                    const result = getStringsMask(
-                        anyQuotesMask,
-                        backslashMask,
-                    );
-                    break :maskBlock .{ result.stringsMask, result.isStirngEndedWithEscaping };
-                };
-
-                // For example, `stringsMask` of the current chunk is:
-                // `abc", "def",`
-                // `000111100011`, and it's incorrect - `abc` was opened before.
-                // and `self.isStringOpened` contains all bits set to 1.
-                // Do XOR bitween them to invert the mask:
-                // `000111100011` ^
-                // `111111111111` =
-                // `111000011100
-                break :block .{
-                    // TODO: abstract from it
-                    stringsMask ^ self.isStringOpened,
-
-                    isStringEndedWithEscaping,
-                };
+                const result = getStringsMask(
+                    anyQuotesMask,
+                    backslashMask,
+                );
+                break :block .{ result.stringsMask, result.isStringEndedWithEscaping };
             };
 
             const lowNibbles = simdUtils.getLowNibblesVector(chunk);
@@ -292,7 +276,12 @@ pub fn next(self: *Tokenizer) usize {
 /// Returns a mask, where 1 at bit indexes of chars inside strings.
 ///
 /// Bits of ending quotes of strings are set to 0.
-inline fn getStringsMask(anyQuotesMask: u64, backslashMask: u64, isPrevStringEndedWithEscaping: u64) struct {
+inline fn getStringsMask(
+    anyQuotesMask: u64,
+    backslashMask: u64,
+    isPrevStringOpened: @FieldType(Tokenizer, "isStringOpened"),
+    isPrevStringEndedWithEscaping: @FieldType(Tokenizer, "isStringEndedWithEscaping"),
+) struct {
     stringsMask: u64,
     isStringEndedWithEscaping: @FieldType(Tokenizer, "isStringEndedWithEscaping"),
 } {
@@ -308,8 +297,12 @@ inline fn getStringsMask(anyQuotesMask: u64, backslashMask: u64, isPrevStringEnd
 
     // Prefix XOR fills all bits between quotes with 1
     const stringsMask = getBitsPrefixXor(unescapedQuotesMask);
+    // If the prev SIMD-chunk has an unclosed string,
+    // `isPrevStringOpened` contains all bits set to 1,
+    // and XOR the current mask with it inverts strings
+    const correctedStringsMask = stringsMask ^ isPrevStringOpened;
 
-    return .{ .stringsMask = stringsMask, .isStringEndedWithEscaping = isStringEndedWithEscaping };
+    return .{ .stringsMask = correctedStringsMask, .isStringEndedWithEscaping = isStringEndedWithEscaping };
 }
 
 /// If `stringsMask` contains an opened, unclosed string at the end,
@@ -335,7 +328,7 @@ inline fn isStringsMaskOpened(stringsMask: u64) u64 {
 /// and returns `0`.
 inline fn getEscapedCharsMask(
     backslashMask: u64,
-    isStringEndedWithEscaping: @FieldType(Tokenizer, "isStringEndedWithEscaping"),
+    isPrevStringEndedWithEscaping: @FieldType(Tokenizer, "isStringEndedWithEscaping"),
 ) struct {
     escapedCharsMask: u64,
     isStringEndedWithEscaping: @FieldType(Tokenizer, "isStringEndedWithEscaping"),
@@ -352,12 +345,10 @@ inline fn getEscapedCharsMask(
         // do `backsMask ^ 1` to flip the first bit (that is, to escape the first char).
         // Otherwise, do `backsMask ^ 0` and get unchanged `backsMask`.
         const correctedBackslashMask =
-            backslashMask ^ ((anyBackslashStarts & 1) * isStringEndedWithEscaping);
+            backslashMask ^ ((anyBackslashStarts & 1) * isPrevStringEndedWithEscaping);
 
         break :block getStartsOfMaskSequences(correctedBackslashMask);
     };
-
-    // TODO: rename 'backslashes' to 'backslash'
 
     // Mask of backslash sequences starting with an even bit index,
     // containing only odd amounts of backslashes
