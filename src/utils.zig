@@ -97,7 +97,7 @@ pub const simd = struct {
     ///
     /// Returns `true` only when the `aarch64` target supports vectors with variable length (128-512 bit),
     /// and only when the target supports 32-64 byte shuffles with them.
-    pub inline fn isVariableVectorLen_aarch64() bool {
+    pub inline fn isVariableLenVector_aarch64() bool {
         return Target.aarch64.featureSetHas(CPU.features, .sve2);
     }
     /// Calling this function without checking `isVariableVectorLen_aarch64` is illegal.
