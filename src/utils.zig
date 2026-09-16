@@ -169,7 +169,7 @@ pub const simd = struct {
             \\ vpcmpb %[operation], %[a], %[b], %[mask]
             \\ kmovq %[mask], %[result]
             : [result] "=r" (-> usize),
-              [mask] "=&k" (mask),
+              [mask] "=k" (mask),
             : [a] "v" (a),
               [b] "v" (b),
               [operation] "i" (switch (comptime operation) {
@@ -188,6 +188,8 @@ pub const simd = struct {
         a: @Vector(16, u8),
         b: @Vector(16, u8),
     ) u64 {
+        // TODO: optimize
+
         const comparedVector = switch (comptime operation) {
             .Eql => a == b,
             .NotEql => a != b,
@@ -215,8 +217,8 @@ pub const simd = struct {
         // representing its bit index in resulting mask
         const singleBitsVector = comparedVector & singleBitMasks;
 
-        const lowHalfVector: @Vector(8, u8) = singleBitsVector[0..8];
-        const highHalfVector: @Vector(8, u8) = singleBitsVector[8..];
+        const lowHalfVector: @Vector(8, u8) = singleBitsVector[0..8].*;
+        const highHalfVector: @Vector(8, u8) = singleBitsVector[8..].*;
 
         // Every byte has only one unique bit set to 1,
         // so `Add` accross all elements is the same
@@ -227,6 +229,20 @@ pub const simd = struct {
 
         return (highHalfMask << 8) | lowHalfMask;
     }
+    /// Does bitwise AND between `a` and `b` and returns
+    /// a 64-bit mask, where 0 is at positions where `a[index] & b[index] == 0`
+    /// and 1 is at positions where `a[index] & b[index] != 0`
+    pub inline fn andToBits512_x64(a: @Vector(64, u8), b: @Vector(64, u8)) u64 {
+        var mask: u64 = undefined;
+        return asm (
+            \\ vptestmb %[a], %[b], %[mask]
+            \\ kmovq %[mask], %[result]
+            : [result] "=r" (-> u64),
+              [mask] "=k" (mask),
+            : [a] "v" (a),
+              [b] "v" (b),
+        );
+    }
 
     pub inline fn isMulCarrylessSupported() bool {
         return switch (CPU.arch) {
@@ -235,8 +251,6 @@ pub const simd = struct {
                 Target.aarch64.Feature.sve_aes,
                 Target.aarch64.Feature.sve_aes2,
             }),
-
-            // TODO: other architectures
             else => false,
         };
     }
