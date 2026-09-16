@@ -156,7 +156,7 @@ pub fn next(self: *Tokenizer) usize {
             const prevControlAndValueCharsMask = self.controlAndValueCharsMask;
             if (prevControlAndValueCharsMask != 0) {
                 const charIndex = utils.getTrailBitIndex(prevControlAndValueCharsMask);
-                self.controlAndValueCharsMask = utils.omitTrailingBit(prevControlAndValueCharsMask);
+                self.controlAndValueCharsMask = utils.omitTrailBit(prevControlAndValueCharsMask);
                 return charIndex;
             }
 
@@ -209,6 +209,7 @@ pub fn next(self: *Tokenizer) usize {
 
                         break :block .{
                             // TODO: Replace comparsion with zero with `VPTESTMB` producing a bit mask from vectors bitwise AND
+
                             compareToBits(.NotEql, jsonCharsMatch & JSON_CHAR_TABLES.CONTROL_CHARS_FLAG, @splat(0)),
                             compareToBits(.NotEql, jsonCharsMatch & JSON_CHAR_TABLES.WHITESPACE_FLAG, @splat(0)),
                         };
@@ -253,6 +254,8 @@ pub fn next(self: *Tokenizer) usize {
                 const result = getStringsMask(
                     anyQuotesMask,
                     backslashMask,
+                    self.isStringOpened,
+                    self.isStringEndedWithEscaping,
                 );
                 break :block .{ result.stringsMask, result.isStringEndedWithEscaping };
             };
@@ -268,7 +271,7 @@ pub fn next(self: *Tokenizer) usize {
 
             if (controlAndValueCharsMask != 0) {
                 const charIndex = utils.getTrailBitIndex(controlAndValueCharsMask);
-                self.controlAndValueCharsMask = utils.omitTrailingBit(controlAndValueCharsMask);
+                self.controlAndValueCharsMask = utils.omitTrailBit(controlAndValueCharsMask);
                 return charIndex;
             } else return NEXT_TRIVIA;
         },
@@ -279,6 +282,10 @@ pub fn next(self: *Tokenizer) usize {
 
             comptime if (!(is128BitVector or isVariableLenVector)) break :simd;
 
+            const vectorLen = 16;
+
+            if (vectorLen > source.len) break :simd;
+
             const prevControlAndValueCharsMask = self.controlAndValueCharsMask;
             if (prevControlAndValueCharsMask != 0) {
                 const charIndex = utils.getTrailBitIndex(prevControlAndValueCharsMask);
@@ -286,16 +293,11 @@ pub fn next(self: *Tokenizer) usize {
                 return charIndex;
             }
 
-            const jsonCharLowNibbleTable = utils.simd.expandVector(
-                JSON_CHAR_TABLES.LOW_NIBBLE_TABLE,
-                16,
-            );
-            const jsonCharHighNibbleTable = utils.simd.expandVector(
-                JSON_CHAR_TABLES.HIGH_NIBBLE_TABLE,
-                16,
-            );
+            const chunk: @Vector(vectorLen, u8) = source[0..vectorLen].*;
 
-            const chunk: @Vector(16, u8) = source[0..16].*;
+            const jsonCharLowNibbleTable: @Vector(vectorLen, u8) = JSON_CHAR_TABLES.LOW_NIBBLE_TABLE;
+            const jsonCharHighNibbleTable =
+                utils.simd.expandVector(JSON_CHAR_TABLES.HIGH_NIBBLE_TABLE, vectorLen);
 
             const anyControlCharsMask, const anyWhitespacesMask = block: {
                 const lowNibbles = utils.simd.getLowNibblesVector(chunk);
@@ -311,7 +313,6 @@ pub fn next(self: *Tokenizer) usize {
                 );
 
                 const jsonCharsMatch = lowNibblesMatch & highNibblesMatch;
-
                 break :block .{
                     utils.simd.compareToBits128_aarch64(
                         .NotEql,
@@ -490,6 +491,7 @@ inline fn getEscapedCharsMask(
 /// Any opaque sequence of chars that are not control or whitespaces is treated as a JSON value.
 ///
 /// That is, for `"abc"123`, `10000000` is returned, 'cause it is treated as a single value.
+///
 /// The same is for `truefalse123"string"`, `nullfalse` and the like.
 ///
 /// `anyControlCharsMask` and `anyWhitespacesMask` can contain
@@ -508,6 +510,7 @@ inline fn getControlAndValueCharsMask(anyControlCharsMask: u64, anyWhitespacesMa
 
     return (controlAndSpacesMask << 1) & ~anyWhitespacesMask;
 }
+
 /// `actualBackslashMask` must be already actualized via
 /// handling `Tokenizer.isStringEndedWithEscaping`.
 ///
@@ -522,4 +525,21 @@ inline fn isBackslashMaskEndedWithEscaping(actualBackslashMask: u64) u64 {
     // If the count is odd, return 1 (`oddNum & 1 == 1`)
     // Otherwise, return 0 (`evenNum & 1 == 0`)
     return endBackslashCount & 1;
+}
+
+/// Returns `true` value when `vector` with JSON chars contains not only the ASCII-chars.
+///
+/// Otherwise, returns `false`.
+inline fn isVectorNonAscii_x64(vector: anytype) bool {
+    // TODO: optimize
+
+    const compareToBits = comptime switch (vector.len) {
+        64 => utils.simd.compareToBits512_x64,
+        16 => utils.simd.compareToBits128_x64,
+        else => unreachable,
+    };
+
+    // All ASCII chars have the highest bit set to 0
+    const onlyHighBitVector: @TypeOf(vector) = @splat(0b10000000);
+    return compareToBits(.Eql, vector & onlyHighBitVector, 0) == 0;
 }
