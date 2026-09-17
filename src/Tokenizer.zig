@@ -168,6 +168,10 @@ pub fn next(self: *Tokenizer) usize {
 
             if (Chunk.len > source.len) break :simd;
 
+            const chunk: Chunk = source[0..Chunk.len].*;
+
+            if (isVectorNonAscii_x64(chunk)) {}
+
             // TODO: check in ASM output if LLVM doesn't move tables initialization from loop
 
             const jsonCharLowNibbleTable: @Vector(Chunk.len, u8) = struct {
@@ -192,8 +196,6 @@ pub fn next(self: *Tokenizer) usize {
                 else => unreachable,
             };
 
-            const chunk: Chunk = source[0..Chunk.len].*;
-
             const anyControlCharsMask: u64, const anyWhitespacesMask: u64 = block: {
                 const lowNibbles = utils.simd.getLowNibblesVector(chunk);
                 const highNibbles = utils.simd.getHighNibblesVector(chunk);
@@ -206,12 +208,15 @@ pub fn next(self: *Tokenizer) usize {
                             utils.simd.shuffleVector512_x64(jsonCharHighNibbleTable, highNibbles);
 
                         const jsonCharsMatch = lowNibblesMatch & highNibblesMatch;
-
                         break :block .{
-                            // TODO: Replace comparsion with zero with `VPTESTMB` producing a bit mask from vectors bitwise AND
-
-                            compareToBits(.NotEql, jsonCharsMatch & JSON_CHAR_TABLES.CONTROL_CHARS_FLAG, @splat(0)),
-                            compareToBits(.NotEql, jsonCharsMatch & JSON_CHAR_TABLES.WHITESPACE_FLAG, @splat(0)),
+                            utils.simd.andToBits512_x64(
+                                jsonCharsMatch,
+                                @splat(JSON_CHAR_TABLES.CONTROL_CHARS_FLAG),
+                            ),
+                            utils.simd.andToBits512_x64(
+                                jsonCharsMatch,
+                                @splat(JSON_CHAR_TABLES.WHITESPACE_FLAG),
+                            ),
                         };
                     },
                     32 => {
@@ -531,15 +536,12 @@ inline fn isBackslashMaskEndedWithEscaping(actualBackslashMask: u64) u64 {
 ///
 /// Otherwise, returns `false`.
 inline fn isVectorNonAscii_x64(vector: anytype) bool {
-    // TODO: optimize
+    // All ASCII chars have the highest bit set to 0
+    const onlyHighBitsVector: @TypeOf(vector) = @splat(0b10000000);
 
-    const compareToBits = comptime switch (vector.len) {
-        64 => utils.simd.compareToBits512_x64,
-        16 => utils.simd.compareToBits128_x64,
+    return switch (comptime vector.len) {
+        64 => utils.simd.andToBits512_x64(vector, onlyHighBitsVector) != 0,
+        16 => utils.simd.compareToBits128_x64(.NotEql, vector & onlyHighBitsVector, 0) != 0,
         else => unreachable,
     };
-
-    // All ASCII chars have the highest bit set to 0
-    const onlyHighBitVector: @TypeOf(vector) = @splat(0b10000000);
-    return compareToBits(.Eql, vector & onlyHighBitVector, 0) == 0;
 }
