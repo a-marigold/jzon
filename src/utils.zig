@@ -7,8 +7,9 @@ const CPU = builtin.cpu;
 
 /// SIMD utils.
 pub const simd = struct {
-    const _MM_CMPINT_EQ = 0;
-    const _MM_CMPINT_NE = 4;
+    const _MM_CMPINT_EQ: u8 = 0x00;
+    const _MM_CMPINT_NE: u8 = 0x04;
+    const _MM_CMPINT_GT: u8 = 0x06;
 
     /// Returns 16, 32, 64 or `null` in case of lack of SIMD.
     ///
@@ -112,7 +113,6 @@ pub const simd = struct {
             : [result] "=r" (-> usize),
         );
     }
-
     /// Permutates elements in `vector` based on `mask` elements.
     ///
     /// If an element of `mask` is more than 16 (bytes amount of 128 bits),
@@ -135,47 +135,62 @@ pub const simd = struct {
         );
     }
 
-    pub const CompareOperation = enum { Eql, NotEql };
+    /// Compares each element of the two vectors producing a mask,
+    /// where bit is set to 1 if the elements equal.
+    pub inline fn eqlToBits128_x64(a: @Vector(16, u8), b: @Vector(16, u8)) u64 {
+        return vectorToBits128_x64(a == b);
+    }
+    /// Compares each element of the two vectors producing a mask,
+    /// where bit is set to 1 if the elements don't equal.
+    pub inline fn notEqlToBits128_x64(a: @Vector(16, u8), b: @Vector(16, u8)) u64 {
+        return vectorToBits128_x64(a != b);
+    }
+
+    /// Compares each element of the two vectors producing a mask,
+    /// where bit is set to 1 if the elements equal.
+    pub inline fn eqlToBits512_x64(a: @Vector(64, u8), b: @Vector(64, u8)) u64 {
+        return compareToBits512_x64(.Eql, a, b);
+    }
+    /// Compares each element of the two vectors producing a mask, a
+    /// where bit is set to 1 if the elements don't equal.
+    pub inline fn notEqlToBits512_x64(a: @Vector(64, u8), b: @Vector(64, u8)) u64 {
+        return compareToBits512_x64(.NotEql, a, b);
+    }
 
     /// Compares every byte of the two vectors using `operation`,
     /// and if they are equal, sets bit of their position
     /// (e.g, the second bit if the second elements are compared)
     /// in the resulting mask to `1`.
-    pub inline fn compareToBits128_x64(
-        comptime operation: CompareOperation,
-        a: @Vector(16, u8),
-        b: @Vector(16, u8),
-    ) u64 {
-        const equalVector = switch (comptime operation) {
-            .Eql => a == b,
-            .NotEql => a != b,
-        };
-        return asm ("pmovmskb %[vector], %[result]"
-            : [result] "=r" (-> u64),
-            : [vector] "v" (equalVector),
-        );
-    }
-    /// Compares every byte of the two vectors using `operation`,
-    /// and if they are equal, sets bit of their position
-    /// (e.g, the second bit if the second elements are compared)
-    /// in the resulting mask to `1`.
-    pub inline fn compareToBits512_x64(
-        comptime operation: CompareOperation,
+    inline fn compareToBits512_x64(
+        comptime operation: enum(u8) {
+            Eql = _MM_CMPINT_EQ,
+            NotEql = _MM_CMPINT_NE,
+            GreaterThan = _MM_CMPINT_GT,
+        },
         a: @Vector(64, u8),
         b: @Vector(64, u8),
     ) u64 {
         var mask: u64 = 0;
         return asm (
-            \\ vpcmpb %[operation], %[a], %[b], %[mask]
+            \\ vpcmpub %[operation], %[b], %[a], %[mask]
             \\ kmovq %[mask], %[result]
             : [result] "=r" (-> usize),
               [mask] "=k" (mask),
             : [a] "v" (a),
               [b] "v" (b),
-              [operation] "i" (switch (comptime operation) {
-                .Eql => _MM_CMPINT_EQ,
-                .NotEql => _MM_CMPINT_NE,
-              }),
+              [operation] "i" (operation),
+        );
+    }
+
+    /// Returns a bit mask, where 1 only
+    /// at indexes of `vector` elements that are `true`.
+    inline fn vectorToBits128_x64(vector: @Vector(16, bool)) u64 {
+        // TODO: avx2 penalty because of 128-bit registers
+        var mask: u64 = undefined;
+        return asm ("pmovmskb %[vector], %[result]"
+            : [result] "=r" (-> u64),
+              [mask] "=k" (mask),
+            : [vector] "v" (vector),
         );
     }
 
@@ -193,6 +208,7 @@ pub const simd = struct {
         const comparedVector = switch (comptime operation) {
             .Eql => a == b,
             .NotEql => a != b,
+            .GreaterThan => a > b,
         };
 
         // The first half of this vector contains `00000001`, `00000010`, ..., `10000000`.
@@ -204,7 +220,6 @@ pub const simd = struct {
                 var mask = 0;
                 for (0..8) |index| {
                     mask = 1 << index;
-
                     masks[index] = mask;
                     masks[index + 8] = mask;
                 }
@@ -229,13 +244,19 @@ pub const simd = struct {
 
         return (highHalfMask << 8) | lowHalfMask;
     }
+
+    pub inline fn greaterThan128_aarch64(a: @Vector(16, u8), b: @Vector(16, u8)) bool {
+        // TODO: check asm
+        return @reduce(.Max, a > b);
+    }
+
     /// Does bitwise AND between `a` and `b` and returns
     /// a 64-bit mask, where 0 is at positions where `a[index] & b[index] == 0`
     /// and 1 is at positions where `a[index] & b[index] != 0`
     pub inline fn andToBits512_x64(a: @Vector(64, u8), b: @Vector(64, u8)) u64 {
         var mask: u64 = undefined;
         return asm (
-            \\ vptestmb %[a], %[b], %[mask]
+            \\ vptestmb %[b], %[a], %[mask]
             \\ kmovq %[mask], %[result]
             : [result] "=r" (-> u64),
               [mask] "=k" (mask),
@@ -296,7 +317,6 @@ pub const simd = struct {
     pub inline fn getHighNibblesVector(vector: anytype) @TypeOf(vector) {
         return vector >> @as(@TypeOf(vector), @splat(4));
     }
-
     /// Expands `vector` which has `u8` elements to `newLen` and fills its new elements with 0.
     pub inline fn expandVector(
         vector: anytype,
@@ -305,7 +325,6 @@ pub const simd = struct {
         return vector ++ @as(@Vector(newLen - vector.len, u8), @splat(0));
     }
 };
-
 /// For each sequence of `1` bits in an unsigned integer `mask`,
 /// leaves only the first least significant bit of the sequence.
 ///
@@ -406,7 +425,6 @@ pub inline fn getLeadBitIndex(bits: u64) u64 {
 pub inline fn omitTrailBit(bits: u64) u64 {
     return bits & (bits - 1);
 }
-
 /// Fills the high `byte` bits with 0, leaving only the low nibble.
 pub inline fn getLowNibble(byte: u8) u8 {
     return byte & 0b00001111;
