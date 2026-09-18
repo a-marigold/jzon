@@ -1,5 +1,7 @@
 //! SIMD utils.
 
+// TODO: is volatile needed
+
 const std = @import("std");
 const Target = std.Target;
 const builtin = @import("builtin");
@@ -21,7 +23,7 @@ const x86 = struct {
 
         return if (hasFeature(
             features,
-            .avx512bw, // Allows instructions with bytes within 512-bit registers.
+            .avx512bw, // Allows instructions with bytes within 512-bit registers
         ))
             64
         else if (hasFeature(features, .avx2))
@@ -91,9 +93,10 @@ const x86 = struct {
 
     /// Compares each element of the two vectors producing a mask,
     /// where bit is set to 1 if the elements equal.
-    pub inline fn eqlToBits128_(a: @Vector(16, u8), b: @Vector(16, u8)) u64 {
+    pub inline fn eqlToBits128(a: @Vector(16, u8), b: @Vector(16, u8)) u64 {
         return vectorToBits128(a == b);
     }
+
     /// Compares each element of the two vectors producing a mask,
     /// where bit is set to 1 if the elements don't equal.
     pub inline fn notEqlToBits128(a: @Vector(16, u8), b: @Vector(16, u8)) u64 {
@@ -103,47 +106,38 @@ const x86 = struct {
     /// Compares each element of the two vectors producing a mask,
     /// where bit is set to 1 if the elements equal.
     pub inline fn eqlToBits512(a: @Vector(64, u8), b: @Vector(64, u8)) u64 {
-        return compareToBits512(.Eql, a, b);
+        var result: u64 = undefined;
+        _ = asm (
+            \\ vpcmpequb %[a], %[b], %[mask]
+            \\ kmovq %[mask], %[result]
+            : [result] "=r" (result),
+              [mask] "=k" (-> u64),
+            : [a] "v" (a),
+              [b] "v" (b),
+        );
+        return result;
     }
     /// Compares each element of the two vectors producing a mask, a
     /// where bit is set to 1 if the elements don't equal.
     pub inline fn notEqlToBits512(a: @Vector(64, u8), b: @Vector(64, u8)) u64 {
-        return compareToBits512(.NotEql, a, b);
-    }
-
-    /// Compares every byte of the two vectors using `operation`,
-    /// and if they are equal, sets bit of their position
-    /// (e.g, the second bit if the second elements are compared)
-    /// in the resulting mask to `1`.
-    inline fn compareToBits512(
-        comptime operation: enum(u8) {
-            Eql = _MM_CMPINT_EQ,
-            NotEql = _MM_CMPINT_NE,
-            GreaterThan = _MM_CMPINT_GT,
-        },
-        a: @Vector(64, u8),
-        b: @Vector(64, u8),
-    ) u64 {
-        var mask: u64 = 0;
-        return asm (
-            \\ vpcmpub %[operation], %[b], %[a], %[mask]
+        var result: u64 = undefined;
+        _ = asm (
+            \\ vpcmpnequb %[a], %[b], %[mask]
             \\ kmovq %[mask], %[result]
-            : [result] "=r" (-> usize),
-              [mask] "=k" (mask),
+            : [result] "=r" (result),
+              [mask] "=k" (-> u64),
             : [a] "v" (a),
               [b] "v" (b),
-              [operation] "i" (operation),
         );
+        return result;
     }
 
     /// Returns a bit mask, where 1 only
     /// at indexes of `vector` elements that are `true`.
     inline fn vectorToBits128(vector: @Vector(16, bool)) u64 {
-        // TODO: avx2 penalty because of 128-bit registers
-        var mask: u64 = undefined;
+        // TODO: check avx2 penalty because of 128-bit registers
         return asm ("pmovmskb %[vector], %[result]"
             : [result] "=r" (-> u64),
-              [mask] "=k" (mask),
             : [vector] "v" (vector),
         );
     }
@@ -152,15 +146,16 @@ const x86 = struct {
     /// a 64-bit mask, where 0 is at positions where `a[index] & b[index] == 0`
     /// and 1 is at positions where `a[index] & b[index] != 0`
     pub inline fn andToBits512(a: @Vector(64, u8), b: @Vector(64, u8)) u64 {
-        var mask: u64 = undefined;
-        return asm (
+        var result: u64 = undefined;
+        asm volatile (
             \\ vptestmb %[b], %[a], %[mask]
             \\ kmovq %[mask], %[result]
-            : [result] "=r" (-> u64),
-              [mask] "=k" (mask),
+            : [result] "=r" (result),
+              [mask] "=k" (-> u64),
             : [a] "v" (a),
               [b] "v" (b),
         );
+        return result;
     }
 };
 
@@ -213,6 +208,7 @@ const aarch64 = struct {
 
     pub inline fn greaterThan128(a: @Vector(16, u8), b: @Vector(16, u8)) bool {
         // TODO: check asm
+
         return @reduce(.Max, a > b);
     }
 
