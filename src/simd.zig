@@ -103,6 +103,22 @@ const x86 = struct {
         return vectorToBits128(a != b);
     }
 
+    /// If there's at least one `a` element that is more than `b` element,
+    /// returns a non-zero value. Otherwise, returns 0.
+    pub inline fn greaterThan128(a: @Vector(16, u8), b: @Vector(16, u8)) u64 {
+        // TODO: check avx2 penalty because of 128-bit registers
+
+        const comparedVector = asm (
+            \\ pminub %[b], %[a]
+            \\ pxor %[b], %[a]
+            : [result] "=r" (-> bool),
+              [b] "=&v" (b),
+            : [a] "v" (a),
+        );
+
+        return vectorToBits128(comparedVector);
+    }
+
     /// Compares each element of the two vectors producing a mask,
     /// where bit is set to 1 if the elements equal.
     pub inline fn eqlToBits512(a: @Vector(64, u8), b: @Vector(64, u8)) u64 {
@@ -125,6 +141,21 @@ const x86 = struct {
             \\ vpcmpnequb %[a], %[b], %[mask]
             \\ kmovq %[mask], %[result]
             : [result] "=r" (result),
+              [mask] "=k" (-> u64),
+            : [a] "v" (a),
+              [b] "v" (b),
+        );
+        return result;
+    }
+
+    /// If there's at least one `a` element that is more than `b` element,
+    /// returns a non-zero value. Otherwise, returns 0.
+    pub inline fn greaterThan512(a: @Vector(64, u8), b: @Vector(64, u8)) u64 {
+        var result: bool = undefined;
+        _ = asm (
+            \\ vpcmpnleub %[b], %[a], %[mask]
+            \\ kmovq %[mask], %[result]
+            : [result] "=q" (result),
               [mask] "=k" (-> u64),
             : [a] "v" (a),
               [b] "v" (b),
