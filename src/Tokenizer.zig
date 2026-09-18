@@ -153,7 +153,7 @@ pub fn next(self: *Tokenizer) usize {
     const source = self.source;
 
     simd: switch (comptime CPU.arch) {
-        .x86_64 => if (comptime simd.getVectorLen_x64()) |vectorLen| {
+        .x86_64 => if (comptime simd.x86.getVectorLen()) |vectorLen| {
             const prevControlAndValueCharsMask = self.controlAndValueCharsMask;
             if (prevControlAndValueCharsMask != 0) {
                 const charIndex = utils.getTrailBitIndex(prevControlAndValueCharsMask);
@@ -189,9 +189,9 @@ pub fn next(self: *Tokenizer) usize {
                 };
             }.TABLE;
 
-            const compareToBits = comptime switch (Chunk.len) {
-                64 => simd.compareToBits512_x64,
-                16 => simd.compareToBits128_x64,
+            const eqlToBits, const notEqlToBits = comptime switch (Chunk.len) {
+                64 => .{ simd.x86.eqlToBits512, simd.x86.notEqlToBits512 },
+                16 => .{ simd.x86.eqlToBits128, simd.x86.notEqlToBits128 },
                 else => unreachable,
             };
 
@@ -202,24 +202,25 @@ pub fn next(self: *Tokenizer) usize {
                 switch (comptime vectorLen) {
                     64 => {
                         const lowNibblesMatch =
-                            simd.shuffleVector512_x64(jsonCharLowNibbleTable, lowNibbles);
+                            simd.x86.shuffleVector512(jsonCharLowNibbleTable, lowNibbles);
                         const highNibblesMatch =
-                            simd.shuffleVector512_x64(jsonCharHighNibbleTable, highNibbles);
+                            simd.x86.shuffleVector512(jsonCharHighNibbleTable, highNibbles);
 
                         const jsonCharsMatch = lowNibblesMatch & highNibblesMatch;
+
                         break :block .{
-                            simd.andToBits512_x64(
+                            simd.x86.andToBits512(
                                 jsonCharsMatch,
                                 @splat(JSON_CHAR_TABLES.CONTROL_CHARS_FLAG),
                             ),
-                            simd.andToBits512_x64(
+                            simd.x86.andToBits512(
                                 jsonCharsMatch,
                                 @splat(JSON_CHAR_TABLES.WHITESPACE_FLAG),
                             ),
                         };
                     },
                     32 => {
-                        const nibblesMatchHalves = simd.shuffleVector256_x64(
+                        const nibblesMatchHalves = simd.x86.shuffleVector256(
                             jsonCharLowNibbleTable ++ jsonCharHighNibbleTable,
                             lowNibbles ++ highNibbles,
                         );
@@ -231,8 +232,8 @@ pub fn next(self: *Tokenizer) usize {
                         const jsonCharsMatch = firstHalfMatch & secondHalfMatch;
 
                         break :block .{
-                            compareToBits(.NotEql, jsonCharsMatch & JSON_CHAR_TABLES.CONTROL_CHARS_FLAG, @splat(0)),
-                            compareToBits(.NotEql, jsonCharsMatch & JSON_CHAR_TABLES.WHITESPACE_FLAG, @splat(0)),
+                            notEqlToBits(jsonCharsMatch & JSON_CHAR_TABLES.CONTROL_CHARS_FLAG, @splat(0)),
+                            notEqlToBits(jsonCharsMatch & JSON_CHAR_TABLES.WHITESPACE_FLAG, @splat(0)),
                         };
                     },
                     16 => {
@@ -244,8 +245,8 @@ pub fn next(self: *Tokenizer) usize {
                         const jsonCharsMatch = lowNibblesMatch & highNibblesMatch;
 
                         break :block .{
-                            compareToBits(.NotEql, jsonCharsMatch & JSON_CHAR_TABLES.CONTROL_CHARS_FLAG, @splat(0)),
-                            compareToBits(.NotEql, jsonCharsMatch & JSON_CHAR_TABLES.WHITESPACE_FLAG, @splat(0)),
+                            notEqlToBits(jsonCharsMatch & JSON_CHAR_TABLES.CONTROL_CHARS_FLAG, @splat(0)),
+                            notEqlToBits(jsonCharsMatch & JSON_CHAR_TABLES.WHITESPACE_FLAG, @splat(0)),
                         };
                     },
                     else => unreachable,
@@ -253,8 +254,8 @@ pub fn next(self: *Tokenizer) usize {
             };
 
             const stringsMask, const isStringEndedWithEscaping = block: {
-                const anyQuotesMask: u64 = compareToBits(.Eql, chunk, @splat('"'));
-                const backslashMask: u64 = compareToBits(.Eql, chunk, @splat('\\'));
+                const anyQuotesMask: u64 = eqlToBits(chunk, @splat('"'));
+                const backslashMask: u64 = eqlToBits(chunk, @splat('\\'));
 
                 const result = getStringsMask(
                     anyQuotesMask,
@@ -282,8 +283,8 @@ pub fn next(self: *Tokenizer) usize {
         },
 
         .aarch64 => {
-            const is128BitVector = comptime simd.is128BitVector_aarch64();
-            const isVariableLenVector = comptime simd.isVariableLenVector_aarch64();
+            const is128BitVector = comptime simd.aarch64.is128BitVector();
+            const isVariableLenVector = comptime simd.aarch64.isVariableLenVector();
 
             comptime if (!(is128BitVector or isVariableLenVector)) break :simd;
 
@@ -308,18 +309,18 @@ pub fn next(self: *Tokenizer) usize {
                 const lowNibbles = simd.getLowNibblesVector(chunk);
                 const highNibbles = simd.getLowNibblesVector(chunk);
 
-                const lowNibblesMatch = simd.shuffleVector128_aarch64(
+                const lowNibblesMatch = simd.aarch64.shuffleVector128(
                     lowNibbles,
                     jsonCharLowNibbleTable,
                 );
-                const highNibblesMatch = simd.shuffleVector128_aarch64(
+                const highNibblesMatch = simd.aarch64.shuffleVector128(
                     highNibbles,
                     jsonCharHighNibbleTable,
                 );
 
                 const jsonCharsMatch = lowNibblesMatch & highNibblesMatch;
                 break :block .{
-                    simd.compareToBits128_aarch64(
+                    simd.aarch64.compareToBits128_aarch64(
                         .NotEql,
                         jsonCharsMatch & JSON_CHAR_TABLES.CONTROL_CHARS_FLAG,
                         @splat(0),
