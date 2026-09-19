@@ -170,7 +170,8 @@ const x86 = struct {
 
     /// `T` is `bool` or `u8`.
     ///
-    /// Returns a bit mask, where 1 only at indexes of `vector` elements that are `true`.
+    /// Returns a bit mask, where 1 is at indexes,
+    /// at which `vector` has bytes with high-bit 1.
     inline fn vectorToBits128(comptime T: type, vector: @Vector(16, T)) u32 {
         // TODO: check avx2 penalty because of 128-bit registers
         return asm ("pmovmskb %[vector], %[result]"
@@ -227,49 +228,53 @@ const aarch64 = struct {
         );
     }
 
+    /// Compares each element of the two vectors producing a mask,
+    /// where bit is set to 1 if the elements equal.
+    pub inline fn eqlToBits128(a: @Vector(16, u8), b: @Vector(16, u8)) u64 {
+        return vectorToBits128(a == b);
+    }
+
+    /// Compares each element of the two vectors producing a mask,
+    /// where bit is set to 1 if the elements equal.
+    pub inline fn notEqlToBits128(a: @Vector(16, u8), b: @Vector(16, u8)) u64 {
+        return vectorToBits128(a != b);
+    }
+
+    /// Returns `true` if there is at least
+    /// one element of `a`  that is more than `b` element.
+    ///
+    /// Otherwise, returns `false`.
     pub inline fn greaterThan128(a: @Vector(16, u8), b: @Vector(16, u8)) bool {
         // TODO: check asm
 
         return @reduce(.Max, a > b);
     }
 
-    /// Compares every byte of the two vectors using `operation`,
-    /// and if they are equal, sets bit of their position
-    /// (e.g, the second bit if the second elements are compared)
-    /// in the resulting mask to `1`.
-    pub inline fn compareToBits128(
-        comptime operation: CompareOperation,
-        a: @Vector(16, u8),
-        b: @Vector(16, u8),
-    ) u64 {
-        // TODO: optimize
-
-        const comparedVector = switch (comptime operation) {
-            .Eql => a == b,
-            .NotEql => a != b,
-            .GreaterThan => a > b,
-        };
+    /// Returns a bit mask, where 1 is at indexes,
+    /// at which `vector` has bytes with high bit 1.
+    inline fn vectorToBits128(vector: @Vector(16, u8)) u64 {
+        // TODO: check the llvm asm output
 
         // The first half of this vector contains `00000001`, `00000010`, ..., `10000000`.
         // The second half is a duplicated first half
-        const singleBitMasks: @Vector(16, u8) =
-            comptime block: {
-                var masks: [16]u8 = undefined;
+        const singleBitMasks: @Vector(16, u8) = comptime block: {
+            var singleBits: [16]u8 = undefined;
 
-                var mask = 0;
-                for (0..8) |index| {
-                    mask = 1 << index;
-                    masks[index] = mask;
-                    masks[index + 8] = mask;
-                }
+            var mask = 0;
+            for (singleBits[0..8], singleBits[8..], 0..) |*lowHalf, *highHalf, index| {
+                mask = 1 << index;
 
-                break :block masks;
-            };
+                lowHalf.* = mask;
+                highHalf.* = mask;
+            }
+
+            break :block singleBits;
+        };
 
         // Replace every `true` (0xFF) byte of `vector`
         // with a byte, where only one bit is set to 1,
         // representing its bit index in resulting mask
-        const singleBitsVector = comparedVector & singleBitMasks;
+        const singleBitsVector = vector & singleBitMasks;
 
         const lowHalfVector: @Vector(8, u8) = singleBitsVector[0..8].*;
         const highHalfVector: @Vector(8, u8) = singleBitsVector[8..].*;

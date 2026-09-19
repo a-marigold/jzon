@@ -541,7 +541,6 @@ inline fn isVectorNonAscii_x64(vector: anytype) bool {
     const onlyHighBitsVector: @TypeOf(vector) = @splat(0b10000000);
 
     return switch (comptime vector.len) {
-        // TODO: check the asm output if there are two 'test' instruction because of returning 'bool' instead of a mask
         64 => simd.x86.andToBits512(vector, onlyHighBitsVector) != 0,
         16 => simd.x86.notEqlToBits128(.NotEql, vector & onlyHighBitsVector, 0) != 0,
         else => unreachable,
