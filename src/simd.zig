@@ -103,7 +103,7 @@ const x86 = struct {
 
     /// If there's at least one `a` element that is more than `b` element,
     /// returns a non-zero value. Otherwise, returns 0.
-    pub inline fn greaterThan128(a: @Vector(16, u8), b: @Vector(16, u8)) u64 {
+    pub inline fn greaterThan128(a: @Vector(16, u8), b: @Vector(16, u8)) bool {
         var bClone = b;
 
         // TODO: check avx2 penalty because of 128-bit registers
@@ -115,7 +115,7 @@ const x86 = struct {
               [b] "=&v" (bClone),
             : [a] "v" (a),
         );
-        return vectorToBits128(u8, comparedVector);
+        return vectorToBits128(u8, comparedVector) != 0;
     }
 
     /// Compares each element of the two vectors producing a mask,
@@ -145,6 +145,12 @@ const x86 = struct {
               [b] "v" (b),
         );
         return result;
+    }
+
+    /// If there's at least one `a` element that is more than `b` element,
+    /// returns a `true` value. Otherwise, returns `false`.
+    pub inline fn greaterThan512(a: @Vector(64, u8), b: @Vector(64, u8)) bool {
+        return @reduce(.Or, a > b);
     }
 
     /// Does bitwise AND between `a` and `b` and returns
