@@ -1,7 +1,5 @@
 //! SIMD utils.
 
-// TODO: is volatile needed
-
 const std = @import("std");
 const Target = std.Target;
 const builtin = @import("builtin");
@@ -94,29 +92,30 @@ const x86 = struct {
     /// Compares each element of the two vectors producing a mask,
     /// where bit is set to 1 if the elements equal.
     pub inline fn eqlToBits128(a: @Vector(16, u8), b: @Vector(16, u8)) u64 {
-        return vectorToBits128(a == b);
+        return vectorToBits128(bool, a == b);
     }
 
     /// Compares each element of the two vectors producing a mask,
     /// where bit is set to 1 if the elements don't equal.
     pub inline fn notEqlToBits128(a: @Vector(16, u8), b: @Vector(16, u8)) u64 {
-        return vectorToBits128(a != b);
+        return vectorToBits128(bool, a != b);
     }
 
     /// If there's at least one `a` element that is more than `b` element,
     /// returns a non-zero value. Otherwise, returns 0.
     pub inline fn greaterThan128(a: @Vector(16, u8), b: @Vector(16, u8)) u64 {
+        var bClone = b;
+
         // TODO: check avx2 penalty because of 128-bit registers
 
         const comparedVector = asm (
-            \\ pminub %[b], %[a]
-            \\ pxor %[b], %[a]
-            : [result] "=r" (-> bool),
-              [b] "=&v" (b),
+            \\ pminub %[a], %[b]
+            \\ pxor %[a], %[b]
+            : [result] "=v" (-> @Vector(16, u8)),
+              [b] "=&v" (bClone),
             : [a] "v" (a),
         );
-
-        return vectorToBits128(comparedVector);
+        return vectorToBits128(u8, comparedVector);
     }
 
     /// Compares each element of the two vectors producing a mask,
@@ -148,45 +147,30 @@ const x86 = struct {
         return result;
     }
 
-    /// If there's at least one `a` element that is more than `b` element,
-    /// returns a non-zero value. Otherwise, returns 0.
-    pub inline fn greaterThan512(a: @Vector(64, u8), b: @Vector(64, u8)) u64 {
-        var result: bool = undefined;
-        _ = asm (
-            \\ vpcmpnleub %[b], %[a], %[mask]
+    /// Does bitwise AND between `a` and `b` and returns
+    /// a 64-bit mask, where 0 is at positions where `a[index] & b[index] == 0`
+    /// and 1 is at positions where `a[index] & b[index] != 0`
+    pub inline fn andToBits512(a: @Vector(64, u8), b: @Vector(64, u8)) u64 {
+        var mask: u64 = undefined;
+        return asm (
+            \\ vptestmb %[b], %[a], %[mask]
             \\ kmovq %[mask], %[result]
-            : [result] "=q" (result),
-              [mask] "=k" (-> u64),
+            : [result] "=r" (-> u64),
+              [mask] "=k" (mask),
             : [a] "v" (a),
               [b] "v" (b),
         );
-        return result;
     }
 
-    /// Returns a bit mask, where 1 only
-    /// at indexes of `vector` elements that are `true`.
-    inline fn vectorToBits128(vector: @Vector(16, bool)) u64 {
+    /// `T` is `bool` or `u8`.
+    ///
+    /// Returns a bit mask, where 1 only at indexes of `vector` elements that are `true`.
+    inline fn vectorToBits128(comptime T: type, vector: @Vector(16, T)) u32 {
         // TODO: check avx2 penalty because of 128-bit registers
         return asm ("pmovmskb %[vector], %[result]"
             : [result] "=r" (-> u64),
             : [vector] "v" (vector),
         );
-    }
-
-    /// Does bitwise AND between `a` and `b` and returns
-    /// a 64-bit mask, where 0 is at positions where `a[index] & b[index] == 0`
-    /// and 1 is at positions where `a[index] & b[index] != 0`
-    pub inline fn andToBits512(a: @Vector(64, u8), b: @Vector(64, u8)) u64 {
-        var result: u64 = undefined;
-        asm volatile (
-            \\ vptestmb %[b], %[a], %[mask]
-            \\ kmovq %[mask], %[result]
-            : [result] "=r" (result),
-              [mask] "=k" (-> u64),
-            : [a] "v" (a),
-              [b] "v" (b),
-        );
-        return result;
     }
 };
 
@@ -310,16 +294,16 @@ pub inline fn mulCarryless(a: u64, b: u64) u64 {
     switch (CPU.arch) {
         .x86_64 => if (Target.x86.featureSetHas(CPU.features, .pclmul)) {
             const aVector: @Vector(2, u64) = .{ a, 0 };
-            const bVector: @Vector(2, u64) = .{ b, 0 };
+            var bVector: @Vector(2, u64) = .{ b, 0 };
 
-            const resultVector = asm (
-                // `0x00` means the least significant bits of vectors are multiplied
-                    "pclmulqdq $0x00, %[a], %[b]" // `b` is mutated
-                    : [b] "+x" (bVector),
-                    : [a] "x" (aVector),
-                );
-            return resultVector[0];
+            asm volatile ("pclmulqdq $0x00, %[a], %[b]" // `0x00` means low bits of vectors are multiplied
+                : [b] "+x" (bVector),
+                : [a] "x" (aVector),
+            );
+            return bVector[0];
         },
+
+        // TODO: check correctness of the features
         .aarch64 => if (Target.aarch64.featureSetHasAny(CPU.features, .{
             Target.aarch64.Feature.sve_aes,
             Target.aarch64.Feature.sve_aes2,
@@ -334,8 +318,10 @@ pub inline fn mulCarryless(a: u64, b: u64) u64 {
             );
             return resultVector[0];
         },
-        else => unreachable,
+        else => {},
     }
+
+    @compileError("Unsupported architecture");
 }
 
 /// Fills high bits of each `vector` element with 0 and leaves only the low bits.
