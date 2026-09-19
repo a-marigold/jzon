@@ -245,9 +245,7 @@ const aarch64 = struct {
     ///
     /// Otherwise, returns `false`.
     pub inline fn greaterThan128(a: @Vector(16, u8), b: @Vector(16, u8)) bool {
-        // TODO: check asm
-
-        return @reduce(.Max, a > b);
+        return @reduce(.Max, a -| b);
     }
 
     /// Returns a bit mask, where 1 is at indexes,

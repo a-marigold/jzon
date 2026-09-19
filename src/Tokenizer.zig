@@ -320,13 +320,11 @@ pub fn next(self: *Tokenizer) usize {
 
                 const jsonCharsMatch = lowNibblesMatch & highNibblesMatch;
                 break :block .{
-                    simd.aarch64.compareToBits128_aarch64(
-                        .NotEql,
+                    simd.aarch64.notEqlToBits128(
                         jsonCharsMatch & JSON_CHAR_TABLES.CONTROL_CHARS_FLAG,
                         @splat(0),
                     ),
-                    simd.compareToBits128_aarch64(
-                        .NotEql,
+                    simd.aarch64.notEqlToBits128(
                         jsonCharsMatch & JSON_CHAR_TABLES.WHITESPACE_FLAG,
                         @splat(0),
                     ),
@@ -334,16 +332,8 @@ pub fn next(self: *Tokenizer) usize {
             };
 
             const stringsMask, const isStringEndedWithEscaping = block: {
-                const anyQuotesMask = simd.compareToBits128_aarch64(
-                    .Eql,
-                    chunk,
-                    @splat('"'),
-                );
-                const backslashMask = simd.compareToBits128_aarch64(
-                    .Eql,
-                    chunk,
-                    @splat('\\'),
-                );
+                const anyQuotesMask = simd.aarch64.eqlToBits128(chunk, @splat('"'));
+                const backslashMask = simd.aarch64.eqlToBits128(chunk, @splat('\\'));
 
                 const result = getStringsMask(
                     anyQuotesMask,
