@@ -1,5 +1,7 @@
 //! SIMD utils.
 
+// TODO: intel syntax x64
+
 const std = @import("std");
 const Target = std.Target;
 const builtin = @import("builtin");
@@ -10,6 +12,8 @@ pub const x86 = struct {
     const _MM_CMPINT_EQ: u8 = 0x00;
     const _MM_CMPINT_NE: u8 = 0x04;
     const _MM_CMPINT_GT: u8 = 0x06;
+
+    const VPTERNLOG_AND_OPERATION = 0x80;
 
     /// Returns 16, 32, 64 or `null` in case of lack of SIMD.
     ///
@@ -121,30 +125,28 @@ pub const x86 = struct {
     /// Compares each element of the two vectors producing a mask,
     /// where bit is set to 1 if the elements equal.
     pub inline fn eqlToBits512(a: @Vector(64, u8), b: @Vector(64, u8)) u64 {
-        var result: u64 = undefined;
-        _ = asm (
+        var mask: u64 = undefined;
+        return asm (
             \\ vpcmpequb %[a], %[b], %[mask]
             \\ kmovq %[mask], %[result]
-            : [result] "=r" (result),
-              [mask] "=k" (-> u64),
+            : [result] "=r" (-> u64),
+              [mask] "=k" (mask),
             : [a] "v" (a),
               [b] "v" (b),
         );
-        return result;
     }
     /// Compares each element of the two vectors producing a mask, a
     /// where bit is set to 1 if the elements don't equal.
     pub inline fn notEqlToBits512(a: @Vector(64, u8), b: @Vector(64, u8)) u64 {
-        var result: u64 = undefined;
-        _ = asm (
+        var mask: u64 = undefined;
+        return asm (
             \\ vpcmpnequb %[a], %[b], %[mask]
             \\ kmovq %[mask], %[result]
-            : [result] "=r" (result),
-              [mask] "=k" (-> u64),
+            : [result] "=r" (-> u64),
+              [mask] "=k" (mask),
             : [a] "v" (a),
               [b] "v" (b),
         );
-        return result;
     }
 
     /// If there's at least one `a` element that is more than `b` element,
@@ -166,6 +168,20 @@ pub const x86 = struct {
             : [a] "v" (a),
               [b] "v" (b),
         );
+    }
+
+    pub inline fn tripleAnd512(
+        a: @Vector(64, u8),
+        b: @Vector(64, u8),
+        c: @Vector(64, u8),
+    ) @Vector(64, u8) {
+        asm ("vpternlogd %[operation], %[a], %[b], %[c]"
+            : [c] "+&v" (c),
+            : [a] "v" (a),
+              [b] "v" (b),
+              [operation] "i" (VPTERNLOG_AND_OPERATION),
+        );
+        return c;
     }
 
     /// `T` is `bool` or `u8`.
