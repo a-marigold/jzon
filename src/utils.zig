@@ -110,7 +110,30 @@ pub inline fn omitTrailBit(bits: u64) u64 {
 pub inline fn getLowNibble(byte: u8) u8 {
     return byte & 0b00001111;
 }
+
 /// Moves the high `byte` bits to the low bits, filling the previous place of high bits with 0.
 pub inline fn getHighNibble(byte: u8) u8 {
     return byte >> 4;
+}
+
+/// Returns an array, filled with values from `start` to `end` (also including `end`),
+/// not including values that equal any of `excludeValues`.
+pub fn range(
+    comptime start: comptime_int,
+    comptime end: comptime_int,
+    comptime excludeValues: anytype,
+) [(end - start) + 1]comptime_int {
+    var result: [(end - start) + 1]comptime_int = undefined;
+
+    var index = 0;
+    range: while (start <= end) : (index += 1) {
+        const value = start + index;
+
+        for (excludeValues) |excludeValue|
+            if (value == excludeValue) continue :range;
+
+        result[index] = value;
+    }
+
+    return result;
 }
