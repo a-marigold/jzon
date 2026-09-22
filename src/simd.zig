@@ -6,7 +6,7 @@ const builtin = @import("builtin");
 
 const CPU = builtin.cpu;
 
-const x86 = struct {
+pub const x86 = struct {
     const _MM_CMPINT_EQ: u8 = 0x00;
     const _MM_CMPINT_NE: u8 = 0x04;
     const _MM_CMPINT_GT: u8 = 0x06;
@@ -181,7 +181,7 @@ const x86 = struct {
     }
 };
 
-const aarch64 = struct {
+pub const aarch64 = struct {
     /// Returns `true` when 128-bit vector-shuffle is supported on `aarch64`.
     pub inline fn is128BitVector() bool {
         return Target.aarch64.featureSetHas(CPU.features, .neon);
@@ -305,7 +305,7 @@ pub inline fn mulCarryless(a: u64, b: u64) u64 {
             const aVector: @Vector(2, u64) = .{ a, 0 };
             var bVector: @Vector(2, u64) = .{ b, 0 };
 
-            asm volatile ("pclmulqdq $0x00, %[a], %[b]" // `0x00` means low bits of vectors are multiplied
+            asm volatile ("pclmulqdq $0x00, %[a], %[b]" // `$0x00` means low bits of vectors are multiplied
                 : [b] "+x" (bVector),
                 : [a] "x" (aVector),
             );
@@ -329,7 +329,6 @@ pub inline fn mulCarryless(a: u64, b: u64) u64 {
         },
         else => {},
     }
-
     @compileError("Unsupported architecture");
 }
 

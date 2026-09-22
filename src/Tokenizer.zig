@@ -1,5 +1,7 @@
 const Tokenizer = @This();
 // TODO: clear docs and comments
+// TODO: vpternlog
+// TODO: disabling flag of encoding validation for strings
 const std = @import("std");
 const builtin = @import("builtin");
 const utils = @import("utils.zig");
@@ -44,8 +46,7 @@ const JSON_CHAR_TABLES = block: {
         .{':'},
     };
 
-    const controlFlag = 0;
-
+    var controlFlag = 0;
     while (groupIndex < controlGroups.len) : (groupIndex += 1) {
         const groupFlag = 1 << groupIndex;
 
@@ -63,7 +64,6 @@ const JSON_CHAR_TABLES = block: {
     };
 
     var whitespaceFlag = 0;
-
     while (groupIndex < whitespaceGroups.len) : (groupIndex += 1) {
         const groupFlag = 1 << groupIndex;
 
@@ -97,6 +97,68 @@ const JSON_CHAR_TABLES = block: {
         pub const CONTROL_CHARS_FLAG = controlFlag;
         pub const WHITESPACE_FLAG = whitespaceFlag;
     };
+};
+
+const UTF8_INVALID_CHAR_TABLES = block: {
+    var leadByteLowNibbles: [16]u8 = @splat(0);
+    var leadByteHighNibbles: [16]u8 = @splat(0);
+    var nextByteHighNibbles: [16]u8 = @splat(0);
+
+    const Group = struct { leadValues: []const u8, nextByteHighNibbles: []const u8 };
+
+    const invalidByteGroups = [_]Group{
+        // ASCII-char when the next char is a continuation
+        .{
+            .leadValues = &.{0b10000000},
+            .nextByteHighNibbles = .{ 0b1000, 0b1001, 0b1010, 0b1011 },
+        },
+        // Missing a continuation byte
+        .{
+            .leadValues = utils.range(0b11000000, 0b11111111, .{}),
+            .nextByteHighNibbles = &utils.range(
+                0b0000,
+                0b1111,
+                .{ 0b1000, 0b1001, 0b1010, 0b1011 },
+            ),
+        },
+        // Overlong 2-byte char (can be written in a less bytes amount)
+        .{
+            .leadValues = &.{ 0b11000000, 0b11000001 },
+            .nextByteHighNibbles = &utils.range(0b0000, 0b1111, .{}),
+        },
+        // Overlong 3-byte char
+        .{
+            .leadValues = &.{0b11100000},
+            .nextByteHighNibbles = &.{ 0b1000, 0b1001 },
+        },
+        // Overlong 4-byte char and Code point greater than 0x10FFFF (unicode maximum)
+        .{
+            .leadValues = utils.range(0b11110000, 0b11111111, .{}),
+            .nextByteHighNibbles = &.{0b1000},
+        },
+        // Surrogate
+        .{
+            .leadValues = &.{0b11101101},
+            .nextByteHighNibbles = &.{ 0b1010, 0b1011 },
+        },
+        // Code point greater than 0x10FFFF
+        .{
+            .leadValues = utils.range(0b11110000, 0b11111111, .{}),
+            .nextByteHighNibbles = &.{ 0b1001, 0b1010, 0b1011 },
+        },
+    };
+
+    for (invalidByteGroups, 0..) |group, index| {
+        const flag = 1 << index;
+
+        for (group.leadValues) |byte| {
+            leadByteLowNibbles[utils.getLowNibble(byte)] = flag;
+            leadByteHighNibbles[utils.getHighNibble(byte)] = flag;
+        }
+
+        for (group.nextByteHighNibbles) |highNibble|
+            nextByteHighNibbles[highNibble] = flag;
+    }
 };
 
 /// Doesn't contain the full source.
@@ -142,6 +204,9 @@ pub const NEXT_END: usize =
 pub const NEXT_TRIVIA: usize =
     @intCast(-2);
 
+pub const NEXT_UTF8_ERROR: usize =
+    @intCast(-3);
+
 /// Returns index of the next JSON control character.
 /// If the tokenizer currently in a string
 /// or a sequence of whitespaces (trivia), returns `NEXT_TRIVIA`.
@@ -169,8 +234,6 @@ pub fn next(self: *Tokenizer) usize {
 
             if (Chunk.len > source.len) break :simd;
 
-            const chunk: Chunk = source[0..Chunk.len].*;
-
             // TODO: check in ASM output if LLVM doesn't move tables initialization from loop
 
             const jsonCharLowNibbleTable: @Vector(Chunk.len, u8) = struct {
@@ -194,6 +257,8 @@ pub fn next(self: *Tokenizer) usize {
                 16 => .{ simd.x86.eqlToBits128, simd.x86.notEqlToBits128 },
                 else => unreachable,
             };
+
+            const chunk: Chunk = source[0..Chunk.len].*;
 
             const anyControlCharsMask: u64, const anyWhitespacesMask: u64 = block: {
                 const lowNibbles = simd.getLowNibblesVector(chunk);
@@ -523,7 +588,7 @@ inline fn isBackslashMaskEndedWithEscaping(actualBackslashMask: u64) u64 {
     return endBackslashCount & 1;
 }
 
-/// Returns `true` value when `vector` with JSON chars contains not only the ASCII-chars.
+/// Returns `true` when `vector` with JSON chars contains not only the ASCII-chars.
 ///
 /// Otherwise, returns `false`.
 inline fn isVectorNonAscii_x64(vector: anytype) bool {
