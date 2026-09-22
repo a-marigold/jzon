@@ -1,7 +1,9 @@
 const Tokenizer = @This();
+
 // TODO: clear docs and comments
 // TODO: vpternlog
 // TODO: disabling flag of encoding validation for strings
+
 const std = @import("std");
 const builtin = @import("builtin");
 const utils = @import("utils.zig");
@@ -92,6 +94,7 @@ const JSON_CHAR_TABLES = block: {
     break :block struct {
         // Align 'cause it's read to vector registers (with 16, 32, 64 bytes widths)
         pub const LOW_NIBBLE_TABLE: [16]u8 align(64) = lowNibbleTable;
+        // Align 'cause it's read to vector registers (with 16, 32, 64 bytes widths)
         pub const HIGH_NIBBLE_TABLE: [8]u8 align(64) = highNibbleTable;
 
         pub const CONTROL_CHARS_FLAG = controlFlag;
@@ -109,12 +112,12 @@ const UTF8_INVALID_CHAR_TABLES = block: {
     const invalidByteGroups = [_]Group{
         // ASCII-char when the next char is a continuation
         .{
-            .leadValues = &.{0b10000000},
+            .leadValues = &utils.range(0b00000000, 0b01111111, .{}),
             .nextByteHighNibbles = .{ 0b1000, 0b1001, 0b1010, 0b1011 },
         },
         // Missing a continuation byte
         .{
-            .leadValues = utils.range(0b11000000, 0b11111111, .{}),
+            .leadValues = &utils.range(0b11000000, 0b11111111, .{}),
             .nextByteHighNibbles = &utils.range(
                 0b0000,
                 0b1111,
@@ -159,6 +162,12 @@ const UTF8_INVALID_CHAR_TABLES = block: {
         for (group.nextByteHighNibbles) |highNibble|
             nextByteHighNibbles[highNibble] = flag;
     }
+
+    break :block struct {
+        pub const LEAD_BYTE_LOW_NIBBLES = leadByteLowNibbles;
+        pub const LEAD_BYTE_HIGH_NIBBLES = leadByteHighNibbles;
+        pub const NEXT_BYTE_HIGH_NIBBLES = nextByteHighNibbles;
+    };
 };
 
 /// Doesn't contain the full source.
