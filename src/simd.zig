@@ -17,6 +17,8 @@ pub const x86 = struct {
 
     // TODO: fix 128-bit asm returning
 
+    // TODO: check avx2 penalty because of 128-bit registers in every `util128`
+
     /// Returns 16, 32, 64 or `null` in case of lack of SIMD.
     ///
     /// Returns 64 only if the target is `avx512bw` (which supports 64-byte vector shuffles).
@@ -187,19 +189,65 @@ pub const x86 = struct {
         return c;
     }
 
-    pub inline fn shiftRight128(vector: @Vector(16, u8), bytesAmount: u8) @Vector(16, u8) {
-        asm ("psrldq %[bytesAmount], %[vector]"
+    /// Example:
+    ///
+    /// `vector = .{ 0, 1, 2, 3 }`.
+    ///
+    /// The result is `.{ 0, 0, 1, 2 }`.
+    pub inline fn shiftRight128(vector: @Vector(16, u8), shiftBytesAmount: u8) @Vector(16, u8) {
+        asm ("psrldq %[shiftBytesAmount], %[vector]"
             : [vector] "=v" (vector),
-            : [bytesAmount] "i" (bytesAmount),
+            : [shiftBytesAmount] "i" (shiftBytesAmount),
         );
         return vector;
     }
 
-    pub inline fn shiftRight512(vector: @Vector(64, u8), bytesAmount: u8) @Vector(64, u8) {
-        return asm ("vpsrldq %[bytesAmount], %[vector], %[result]"
+    /// Example:
+    ///
+    /// `a = .{ 0, 1, 2, 3 }` and `b = .{ 4, 5, 6, 7 }`
+    ///
+    /// The result is `.{ 0, 0, 4, 5 }`
+    pub inline fn mergeShiftRight128(
+        a: @Vector(16, u8),
+        b: @Vector(16, u8),
+        comptime shiftBytesAmount: u8,
+    ) @Vector(16, u8) {
+        return asm ("palignr %[shiftBytesAmount], %[b], %[a], %[result]"
+            : [result] "=v" (-> @Vector(16, u8)),
+            : [a] "v" (a),
+              [b] "v" (b),
+              [shiftBytesAmount] "i" (shiftBytesAmount),
+        );
+    }
+
+    /// Example:
+    ///
+    /// `vector = .{ 0, 1, 2, 3 }`.
+    ///
+    /// The result is `.{ 0, 0, 1, 2 }`.
+    pub inline fn shiftRight512(vector: @Vector(64, u8), shiftBytesAmount: u8) @Vector(64, u8) {
+        return asm ("vpsrldq %[shiftBytesAmount], %[vector], %[result]"
             : [result] "=v" (-> @Vector(64, u8)),
             : [vector] "v" (vector),
-              [bytesAmount] "i" (bytesAmount),
+              [shiftBytesAmount] "i" (shiftBytesAmount),
+        );
+    }
+
+    /// Example:
+    ///
+    /// `a = .{ 0, 1, 2, 3 }` and `b = .{ 4, 5, 6, 7 }`
+    ///
+    /// The result is `.{ 0, 0, 4, 5 }`
+    pub inline fn mergeShiftRight512(
+        a: @Vector(64, u8),
+        b: @Vector(64, u8),
+        shiftBytesAmount: u8,
+    ) @Vector(64, u8) {
+        return asm ("vpalignr %[shiftBytesAmount], %[b], %[a], %[result]"
+            : [result] "=v" (-> @Vector(64, u8)),
+            : [a] "v" (a),
+              [b] "v" (b),
+              [shiftBytesAmount] "i" (shiftBytesAmount),
         );
     }
 
@@ -309,6 +357,7 @@ pub const aarch64 = struct {
                 mask = 1 << index;
 
                 lowHalf.* = mask;
+
                 highHalf.* = mask;
             }
 
@@ -386,6 +435,7 @@ pub inline fn getLowNibblesVector(vector: anytype) @TypeOf(vector) {
 pub inline fn getHighNibblesVector(vector: anytype) @TypeOf(vector) {
     return vector >> @as(@TypeOf(vector), @splat(4));
 }
+
 /// Expands `vector` which has `u8` elements to `newLen` and fills its new elements with 0.
 pub inline fn expandVector(
     vector: anytype,
