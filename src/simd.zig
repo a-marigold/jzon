@@ -283,6 +283,16 @@ pub const aarch64 = struct {
         return @reduce(.Max, a -| b);
     }
 
+    pub inline fn shiftLeft128(vector: @Vector(16, u8), comptime bytesAmount: u8) @Vector(16, u8) {
+        const zeroVector: @Vector(16, u8) = @splat(0);
+        return asm ("ext %[result], %[zeroVector], %[vector], %[start]"
+            : [result] "=w" (-> @Vector(16, u8)),
+            : [zeroVector] "w" (zeroVector),
+              [vector] "w" (vector),
+              [start] "I" (comptime 16 - bytesAmount),
+        );
+    }
+
     /// Returns a bit mask, where 1 is at indexes,
     /// at which `vector` has bytes with high bit 1.
     inline fn vectorToBits128(vector: @Vector(16, u8)) u64 {
