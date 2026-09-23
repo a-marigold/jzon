@@ -187,16 +187,16 @@ pub const x86 = struct {
         return c;
     }
 
-    pub inline fn shiftLeft128(vector: @Vector(16, u8), bytesAmount: u8) @Vector(16, u8) {
-        asm ("pslldq %[bytesAmount], %[vector]"
+    pub inline fn shiftRight128(vector: @Vector(16, u8), bytesAmount: u8) @Vector(16, u8) {
+        asm ("psrldq %[bytesAmount], %[vector]"
             : [vector] "=v" (vector),
             : [bytesAmount] "i" (bytesAmount),
         );
         return vector;
     }
 
-    pub inline fn shiftLeft512(vector: @Vector(64, u8), bytesAmount: u8) @Vector(64, u8) {
-        return asm ("vpslldq %[bytesAmount], %[vector], %[result]"
+    pub inline fn shiftRight512(vector: @Vector(64, u8), bytesAmount: u8) @Vector(64, u8) {
+        return asm ("vpsrldq %[bytesAmount], %[vector], %[result]"
             : [result] "=v" (-> @Vector(64, u8)),
             : [vector] "v" (vector),
               [bytesAmount] "i" (bytesAmount),
@@ -283,13 +283,14 @@ pub const aarch64 = struct {
         return @reduce(.Max, a -| b);
     }
 
-    pub inline fn shiftLeft128(vector: @Vector(16, u8), comptime bytesAmount: u8) @Vector(16, u8) {
+    pub inline fn shiftRight128(vector: @Vector(16, u8), comptime bytesAmount: u8) @Vector(16, u8) {
         const zeroVector: @Vector(16, u8) = @splat(0);
+
         return asm ("ext %[result], %[zeroVector], %[vector], %[start]"
             : [result] "=w" (-> @Vector(16, u8)),
             : [zeroVector] "w" (zeroVector),
               [vector] "w" (vector),
-              [start] "I" (comptime 16 - bytesAmount),
+              [start] "I" (16 - bytesAmount),
         );
     }
 
