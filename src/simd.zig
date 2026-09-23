@@ -15,6 +15,8 @@ pub const x86 = struct {
 
     const VPTERNLOG_AND_OPERATION = 0x80;
 
+    // TODO: fix 128-bit asm returning
+
     /// Returns 16, 32, 64 or `null` in case of lack of SIMD.
     ///
     /// Returns 64 only if the target is `avx512bw` (which supports 64-byte vector shuffles).
@@ -150,7 +152,7 @@ pub const x86 = struct {
     }
 
     /// If there's at least one `a` element that is more than `b` element,
-    /// returns a `true` value. Otherwise, returns `false`.
+    /// returns `true` value. Otherwise, returns `false`.
     pub inline fn greaterThan512(a: @Vector(64, u8), b: @Vector(64, u8)) bool {
         return @reduce(.Or, a > b);
     }
@@ -175,6 +177,7 @@ pub const x86 = struct {
         b: @Vector(64, u8),
         c: @Vector(64, u8),
     ) @Vector(64, u8) {
+        // TODO: mask
         asm ("vpternlogd %[operation], %[a], %[b], %[c]"
             : [c] "+&v" (c),
             : [a] "v" (a),
@@ -182,6 +185,22 @@ pub const x86 = struct {
               [operation] "i" (VPTERNLOG_AND_OPERATION),
         );
         return c;
+    }
+
+    pub inline fn shiftLeft128(vector: @Vector(16, u8), bytesAmount: u8) @Vector(16, u8) {
+        asm ("pslldq %[bytesAmount], %[vector]"
+            : [vector] "=v" (vector),
+            : [bytesAmount] "i" (bytesAmount),
+        );
+        return vector;
+    }
+
+    pub inline fn shiftLeft512(vector: @Vector(64, u8), bytesAmount: u8) @Vector(64, u8) {
+        return asm ("vpslldq %[bytesAmount], %[vector], %[result]"
+            : [result] "=v" (-> @Vector(64, u8)),
+            : [vector] "v" (vector),
+              [bytesAmount] "i" (bytesAmount),
+        );
     }
 
     /// `T` is `bool` or `u8`.
