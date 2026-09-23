@@ -88,11 +88,11 @@ pub fn getByteFlag(comptime bitOffset: comptime_int) u8 {
 }
 
 /// Returns index of the first least significant bit which is set to 1.
-pub inline fn getTrailBitIndex(bits: u64) u64 {
+pub inline fn countTrailZeros(bits: u64) u64 {
     return @ctz(bits);
 }
 /// Returns index of the first most significant bit which is set to 1.
-pub inline fn getLeadBitIndex(bits: u64) u64 {
+pub inline fn countLeadZeros(bits: u64) u64 {
     return @clz(bits);
 }
 
