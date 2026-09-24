@@ -1,6 +1,7 @@
 //! SIMD utils.
 
 // TODO: intel syntax x64
+// TODO: 16, 64 byte order
 
 const std = @import("std");
 const Target = std.Target;
@@ -12,7 +13,6 @@ pub const x86 = struct {
     const _MM_CMPINT_EQ: u8 = 0x00;
     const _MM_CMPINT_NE: u8 = 0x04;
     const _MM_CMPINT_GT: u8 = 0x06;
-
     const VPTERNLOG_AND_OPERATION = 0x80;
 
     // TODO: fix 128-bit asm returning
@@ -23,7 +23,7 @@ pub const x86 = struct {
     ///
     /// Returns 64 only if the target is `avx512bw` (which supports 64-byte vector shuffles).
     /// If the target supports just `avx512`, 32 is returned.
-    pub inline fn getVectorLen() ?comptime_int {
+    pub inline fn getMaxVectorLen() ?comptime_int {
         const features = CPU.features;
         const hasFeature = Target.x86.featureSetHas;
 
@@ -174,6 +174,7 @@ pub const x86 = struct {
         );
     }
 
+    /// Does bitwise AND between `a`, `b`, and `c`.
     pub inline fn tripleAnd512(
         a: @Vector(64, u8),
         b: @Vector(64, u8),
@@ -187,6 +188,12 @@ pub const x86 = struct {
               [operation] "i" (VPTERNLOG_AND_OPERATION),
         );
         return c;
+    }
+
+    pub inline fn isNonZero512(vector: @Vector(64, u8)) bool {
+        // TODO: compiler explorer
+
+        return @reduce(.Or, vector) != 0;
     }
 
     /// Example:
@@ -444,11 +451,11 @@ pub inline fn mulCarryless(a: u64, b: u64) u64 {
 }
 
 /// Fills high bits of each `vector` element with 0 and leaves only the low bits.
-pub inline fn getLowNibblesVector(vector: anytype) @TypeOf(vector) {
+pub inline fn getLowNibbles(vector: anytype) @TypeOf(vector) {
     return vector & @as(@TypeOf(vector), @splat(0b00001111));
 }
 /// Moves high bits of each `vector` element to its low bits.
-pub inline fn getHighNibblesVector(vector: anytype) @TypeOf(vector) {
+pub inline fn getHighNibbles(vector: anytype) @TypeOf(vector) {
     return vector >> @as(@TypeOf(vector), @splat(4));
 }
 
