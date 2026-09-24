@@ -331,14 +331,30 @@ pub const aarch64 = struct {
         return @reduce(.Max, a -| b);
     }
 
-    pub inline fn shiftRight128(vector: @Vector(16, u8), comptime bytesAmount: u8) @Vector(16, u8) {
-        const zeroVector: @Vector(16, u8) = @splat(0);
+    /// Example:
+    ///
+    /// `vector = .{ 0, 1, 2, 3 }`.
+    ///
+    /// The result is `.{ 0, 0, 1, 2 }`.
+    pub inline fn shiftRight128(vector: @Vector(16, u8), comptime shiftBytesAmount: u8) @Vector(16, u8) {
+        return mergeShiftRight128(@splat(0), vector, shiftBytesAmount);
+    }
 
-        return asm ("ext %[result], %[zeroVector], %[vector], %[start]"
+    /// Example:
+    ///
+    /// `a = .{ 0, 1, 2, 3 }` and `b = .{ 4, 5, 6, 7 }`.
+    ///
+    /// The result is `.{ 2, 3, 4, 5 }`.
+    pub inline fn mergeShiftRight128(
+        a: @Vector(16, u8),
+        b: @Vector(16, u8),
+        comptime shiftBytesAmount: u8,
+    ) @Vector(16, u8) {
+        return asm ("ext %[result], %[a], %[b], %[start]"
             : [result] "=w" (-> @Vector(16, u8)),
-            : [zeroVector] "w" (zeroVector),
-              [vector] "w" (vector),
-              [start] "I" (16 - bytesAmount),
+            : [a] "w" (a),
+              [b] "w" (b),
+              [start] "I" (comptime 16 - shiftBytesAmount),
         );
     }
 
