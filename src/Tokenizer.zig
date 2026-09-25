@@ -1,8 +1,8 @@
 const Tokenizer = @This();
 
 // TODO: clear docs and comments
-// TODO: vpternlog
-// TODO: disabling flag of encoding validation for strings
+// TODO: flag of disabling encoding validation for strings
+// TODO: padding (https://arxiv.org/html/2010.03090v5#S6 --- 6.3)
 
 const std = @import("std");
 const builtin = @import("builtin");
@@ -92,9 +92,8 @@ const JSON_CHAR_TABLES = block: {
     }
 
     break :block struct {
-        // Align 'cause it's read to vector registers (with 16, 32, 64 bytes widths)
+        // Align 'cause it's moved to vector registers (with 16, 32, 64 bytes widths)
         pub const LOW_NIBBLE_TABLE: [16]u8 align(64) = lowNibbleTable;
-        // Align 'cause it's read to vector registers (with 16, 32, 64 bytes widths)
         pub const HIGH_NIBBLE_TABLE: [8]u8 align(64) = highNibbleTable;
 
         pub const CONTROL_CHARS_FLAG = controlFlag;
@@ -102,6 +101,20 @@ const JSON_CHAR_TABLES = block: {
     };
 };
 
+/// Contains `LEAD_BYTE_LOW_NIBBLE_TABLE`, `LEAD_BYTE_HIGH_NIBBLE_TABLE`,
+/// `NEXT_BYTE_HIGH_NIBBLE_TABLE` lookup tables to be used as vectors
+/// and `DOUBLE_CONTINUATION_FLAG`.
+///
+/// Indexes of tables are low, high nibbles of the first (lead) byte of a sequence,
+/// and high nibbles of the second (next or continuation) byte of a sequence.
+///
+/// Values at indexes are error flags.
+/// If nibbles of the first (lead) byte and high nibble of the second byte
+/// give a non-zero value (error flag) which isn't the `DOUBLE_CONTINUATION_FLAG`,
+/// that means JSON has invalid UTF-8.
+///
+/// All values of this table that are `DOUBLE_CONTINUATION_FLAG`
+/// are not errors, but they used for validating 3-, 4- byte sequences.
 const UTF8_INVALID_CHAR_TABLES = block: {
     var leadByteLowNibbles: [16]u8 = @splat(0);
     var leadByteHighNibbles: [16]u8 = @splat(0);
@@ -146,13 +159,15 @@ const UTF8_INVALID_CHAR_TABLES = block: {
         },
         // Code point greater than 0x10FFFF
         .{
-            .leadValues = utils.range(0b11110000, 0b11111111, .{}),
+            .leadValues = &utils.range(0b11110000, 0b11111111, .{}),
             .nextByteHighNibbles = &.{ 0b1001, 0b1010, 0b1011 },
         },
     };
 
-    for (invalidByteGroups, 0..) |group, index| {
-        const flag = 1 << index;
+    var groupIndex = 0;
+
+    for (invalidByteGroups) |group| {
+        const flag = 1 << groupIndex;
 
         for (group.leadValues) |byte| {
             leadByteLowNibbles[utils.getLowNibble(byte)] = flag;
@@ -161,12 +176,28 @@ const UTF8_INVALID_CHAR_TABLES = block: {
 
         for (group.nextByteHighNibbles) |highNibble|
             nextByteHighNibbles[highNibble] = flag;
+
+        groupIndex += 1;
+    }
+
+    const doubleContinuationFlag = 1 << groupIndex;
+
+    for (utils.range(0b10000000, 0b10111111)) |byte| {
+        const lowNibble = utils.getLowNibble(byte);
+        const highNibble = utils.getHighNibble(byte);
+
+        leadByteLowNibbles[lowNibble] = doubleContinuationFlag;
+        leadByteHighNibbles[highNibble] = doubleContinuationFlag;
+        nextByteHighNibbles[highNibble] = doubleContinuationFlag;
     }
 
     break :block struct {
-        pub const LEAD_BYTE_LOW_NIBBLES = leadByteLowNibbles;
-        pub const LEAD_BYTE_HIGH_NIBBLES = leadByteHighNibbles;
-        pub const NEXT_BYTE_HIGH_NIBBLES = nextByteHighNibbles;
+        // Align 'cause it's moved to vector registers (with 16, 32, 64 bytes widths)
+        pub const LEAD_BYTE_LOW_NIBBLES: [16]u8 align(64) = leadByteLowNibbles;
+        pub const LEAD_BYTE_HIGH_NIBBLES: [16]u8 align(64) = leadByteHighNibbles;
+        pub const NEXT_BYTE_HIGH_NIBBLES: [16]u8 align(64) = nextByteHighNibbles;
+
+        pub const DOUBLE_CONTINUATION_FLAG: u8 = doubleContinuationFlag;
     };
 };
 
