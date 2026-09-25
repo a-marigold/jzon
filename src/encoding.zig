@@ -105,6 +105,25 @@ const UTF8_INVALID_CHAR_TABLES = block: {
     };
 };
 
+/// Tables, used with vector shuffle instruction
+/// to classify 3-byte UTF-8 leaders (11100000..11101111).
+const UTF8_THREE_BYTE_LEAD_TABLES = block: {
+    var lowNibbles: [16]u8 = @splat(0);
+    var highNibbles: [16]u8 = @splat(0);
+
+    const value: u8 = 0b11111111;
+
+    for (utils.range(0b11100000, 0b11101111)) |byte| {
+        lowNibbles[utils.getLowNibble(byte)] = value;
+        highNibbles[utils.getHighNibble(byte)] = value;
+    }
+
+    break :block struct {
+        pub const LOW_NIBBLE_TABLE = lowNibbles;
+        pub const HIGH_NIBBLE_TABLE = highNibbles;
+    };
+};
+
 /// Returns `true` when `vector` with JSON chars contains not only the ASCII-chars.
 ///
 /// Otherwise, returns `false`.
