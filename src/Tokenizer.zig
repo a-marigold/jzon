@@ -49,6 +49,7 @@ const JSON_CHAR_TABLES = block: {
     };
 
     var controlFlag = 0;
+
     while (groupIndex < controlGroups.len) : (groupIndex += 1) {
         const groupFlag = 1 << groupIndex;
 
@@ -66,6 +67,7 @@ const JSON_CHAR_TABLES = block: {
     };
 
     var whitespaceFlag = 0;
+
     while (groupIndex < whitespaceGroups.len) : (groupIndex += 1) {
         const groupFlag = 1 << groupIndex;
 
@@ -113,8 +115,9 @@ const JSON_CHAR_TABLES = block: {
 /// give a non-zero value (error flag) which isn't the `DOUBLE_CONTINUATION_FLAG`,
 /// that means JSON has invalid UTF-8.
 ///
-/// All values of this table that are `DOUBLE_CONTINUATION_FLAG`
-/// are not errors, but they used for validating 3-, 4- byte sequences.
+/// All values of this table that are `DOUBLE_CONTINUATION_FLAG` are not errors.
+/// They mean two continuation bytes in a row and
+/// used for validating 3-, 4- byte sequences.
 const UTF8_INVALID_CHAR_TABLES = block: {
     var leadByteLowNibbles: [16]u8 = @splat(0);
     var leadByteHighNibbles: [16]u8 = @splat(0);
@@ -188,14 +191,15 @@ const UTF8_INVALID_CHAR_TABLES = block: {
 
         leadByteLowNibbles[lowNibble] = doubleContinuationFlag;
         leadByteHighNibbles[highNibble] = doubleContinuationFlag;
+
         nextByteHighNibbles[highNibble] = doubleContinuationFlag;
     }
 
     break :block struct {
         // Align 'cause it's moved to vector registers (with 16, 32, 64 bytes widths)
-        pub const LEAD_BYTE_LOW_NIBBLES: [16]u8 align(64) = leadByteLowNibbles;
-        pub const LEAD_BYTE_HIGH_NIBBLES: [16]u8 align(64) = leadByteHighNibbles;
-        pub const NEXT_BYTE_HIGH_NIBBLES: [16]u8 align(64) = nextByteHighNibbles;
+        pub const LEAD_BYTE_LOW_NIBBLE_TABLE: [16]u8 align(64) = leadByteLowNibbles;
+        pub const LEAD_BYTE_HIGH_NIBBLE_TABLE: [16]u8 align(64) = leadByteHighNibbles;
+        pub const NEXT_BYTE_HIGH_NIBBLE_TABLE: [16]u8 align(64) = nextByteHighNibbles;
 
         pub const DOUBLE_CONTINUATION_FLAG: u8 = doubleContinuationFlag;
     };
@@ -231,20 +235,23 @@ pub fn init(source: []const u8) Tokenizer {
         .source = source,
         .isStringOpened = 0,
         .isStringEndedWithEscaping = 0,
+        .prevChunk = @splat(0),
     };
 }
 
+const NextReturnType = @typeInfo(@TypeOf(next)).@"fn".return_type.?;
+
 /// `next` function returns this value to indicate the end of `source`.
-pub const NEXT_END: usize =
+pub const NEXT_END: NextReturnType =
     @intCast(-1);
 
 /// `next` function returns this value to indicate that
 /// the current SIMD chunk or scalar symbol of `source`
 /// is inside a string or trivia (a sequence of whitespaces and other trivial chars).
-pub const NEXT_TRIVIA: usize =
+pub const NEXT_TRIVIA: NextReturnType =
     @intCast(-2);
 
-pub const NEXT_UTF8_ERROR: usize =
+pub const NEXT_UTF8_ERROR: NextReturnType =
     @intCast(-3);
 
 /// Returns index of the next JSON control character.
