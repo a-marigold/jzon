@@ -190,6 +190,12 @@ pub const x86 = struct {
         return c;
     }
 
+    pub inline fn isZero512(vector: @Vector(64, u8)) bool {
+        // TODO: compiler explorer
+
+        return @reduce(.Or, vector) == 0;
+    }
+
     pub inline fn isNonZero512(vector: @Vector(64, u8)) bool {
         // TODO: compiler explorer
 
@@ -206,6 +212,7 @@ pub const x86 = struct {
             : [vector] "=v" (vector),
             : [shiftBytesAmount] "i" (shiftBytesAmount),
         );
+
         return vector;
     }
 
