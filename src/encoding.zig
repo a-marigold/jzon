@@ -1,5 +1,4 @@
 const std = @import("std");
-
 const utils = @import("utils.zig");
 const simd = @import("simd.zig");
 
@@ -105,8 +104,10 @@ const UTF8_INVALID_CHAR_TABLES = block: {
     };
 };
 
-/// Tables, used with vector shuffle instruction
+/// Tables, used with the vector shuffle instruction
 /// to classify 3-byte UTF-8 leaders (11100000..11101111).
+///
+/// Values are all 11111111.
 const UTF8_THREE_BYTE_LEAD_TABLES = block: {
     var lowNibbles: [16]u8 = @splat(0);
     var highNibbles: [16]u8 = @splat(0);
@@ -119,15 +120,38 @@ const UTF8_THREE_BYTE_LEAD_TABLES = block: {
     }
 
     break :block struct {
-        pub const LOW_NIBBLE_TABLE = lowNibbles;
-        pub const HIGH_NIBBLE_TABLE = highNibbles;
+        // Align 'cause it's moved to vector registers (with 16, 32, 64 bytes widths)
+        pub const LOW_NIBBLE_TABLE: [16]u8 align(8) = lowNibbles;
+        pub const HIGH_NIBBLE_TABLE: [16]u8 align(8) = highNibbles;
+    };
+};
+
+/// Tables, used with the vector shuffle instruction
+/// to classify 4-byte UTF-8 leaders (11110000..11110100).
+///
+/// Values are all 11111111.
+const UTF8_FOUR_BYTE_LEAD_TABLES = block: {
+    var lowNibbles: [16]u8 = @splat(0);
+    var highNibbles: [16]u8 = @splat(0);
+
+    const value: u8 = 0b11111111;
+
+    for (utils.range(0b11110000, 0b11110100)) |byte| {
+        lowNibbles[utils.getLowNibble(byte)] = value;
+        highNibbles[utils.getHighNibble(byte)] = value;
+    }
+
+    break :block struct {
+        // Align 'cause it's moved to vector registers (with 16, 32, 64 bytes widths)
+        pub const LOW_NIBBLE_TABLE: [16]u8 align(8) = lowNibbles;
+        pub const HIGH_NIBBLE_TABLE: [16]u8 align(8) = highNibbles;
     };
 };
 
 /// Returns `true` when `vector` with JSON chars contains not only the ASCII-chars.
 ///
 /// Otherwise, returns `false`.
-inline fn isVectroNonAscii_x86(vector: anytype) bool {
+inline fn isVectorNonAscii_x86(vector: anytype) bool {
     // All ASCII chars have the highest bit set to 0
     const onlyHighBitsVector: @TypeOf(vector) = @splat(0b10000000);
 
