@@ -111,7 +111,7 @@ source: []const u8,
 ///
 /// Bits of it are set to `1` only if they
 /// contain a control char or a start of JSON value.
-controlAndValueCharsMask: u64,
+prevJsonCharsMask: u64,
 
 // TODO: contexts
 
@@ -169,17 +169,20 @@ pub const NEXT_UTF8_ERROR: NextReturnType =
 /// or a sequence of whitespaces (trivia), returns `NEXT_TRIVIA`.
 /// If the JSON `source` ends, returns `NEXT_END`.
 ///
-/// List of control chars, indexes of which can be returned:
+/// List of JSON chars, indexes of which can be returned:
 /// - `[`, `]`, `{`, `}`, `,`, `:`.
+/// - Starts of values: `"`, `t`, `f`, `n`, `0..9`, `-`,
+/// or anything at position of value (even invalid chars).
+// TODO: invalid UTF-8 at the very last source char can be treated as a value an it should be documented
 pub fn next(self: *Tokenizer) usize {
     const source = self.source;
 
     simd: switch (comptime CPU.arch) {
         .x86_64 => if (comptime simd.x86.getVectorLen()) |maxVectorLen| {
-            const prevControlAndValueCharsMask = self.controlAndValueCharsMask;
-            if (prevControlAndValueCharsMask != 0) {
-                const charIndex = utils.getTrailBitIndex(prevControlAndValueCharsMask);
-                self.controlAndValueCharsMask = utils.omitTrailBit(prevControlAndValueCharsMask);
+            const prevJsonCharsMask = self.prevJsonCharsMask;
+            if (prevJsonCharsMask != 0) {
+                const charIndex = utils.countTrailZeros(prevJsonCharsMask);
+                self.prevJsonCharsMask = utils.omitTrailBit(prevJsonCharsMask);
                 return charIndex;
             }
 
@@ -187,35 +190,33 @@ pub fn next(self: *Tokenizer) usize {
             // and uses not all 32 bytes of a SIMD chunk (see the code below)
             const shuffleVectorLen = if (maxVectorLen == 32) 16 else maxVectorLen;
 
-            const Chunk = @Vector(shuffleVectorLen, u8);
+            const chunk: @Vector(shuffleVectorLen, u8) = source[0..shuffleVectorLen].*;
 
-            if (Chunk.len > source.len) break :simd;
+            if (chunk.len > source.len) break :simd;
 
             // TODO: check in ASM output if LLVM doesn't move tables initialization from loop
 
-            const jsonCharLowNibbleTable: @Vector(Chunk.len, u8) = struct {
+            const jsonCharLowNibbleTable: @Vector(chunk.len, u8) = struct {
                 const TABLE = block: {
                     const tableArray = JSON_CHAR_TABLES.LOW_NIBBLE_TABLE;
                     const tableVector: @Vector(tableArray.len, u8) = tableArray;
-                    break :block simd.expandVector(tableVector, Chunk.len);
+                    break :block simd.expandVector(tableVector, chunk.len);
                 };
             }.TABLE;
             // TODO: vpternlog
-            const jsonCharHighNibbleTable: @Vector(Chunk.len, u8) = struct {
+            const jsonCharHighNibbleTable: @Vector(chunk.len, u8) = struct {
                 const TABLE = block: {
                     const tableArray = JSON_CHAR_TABLES.HIGH_NIBBLE_TABLE;
                     const tableVector: @Vector(tableArray.len, u8) = tableArray;
-                    break :block simd.expandVector(tableVector, Chunk.len);
+                    break :block simd.expandVector(tableVector, chunk.len);
                 };
             }.TABLE;
 
-            const eqlToBits, const notEqlToBits = comptime switch (Chunk.len) {
+            const eqlToBits, const notEqlToBits = comptime switch (chunk.len) {
                 16 => .{ simd.x86.eqlToBits128, simd.x86.notEqlToBits128 },
                 64 => .{ simd.x86.eqlToBits512, simd.x86.notEqlToBits512 },
                 else => unreachable,
             };
-
-            const chunk: Chunk = source[0..Chunk.len].*;
 
             const anyControlCharsMask: u64, const anyWhitespacesMask: u64 = block: {
                 const lowNibbles = simd.getLowNibbles(chunk);
@@ -228,11 +229,11 @@ pub fn next(self: *Tokenizer) usize {
                         const highNibblesMatch =
                             simd.shuffleVector128_x64(jsonCharHighNibbleTable, highNibbles);
 
-                        const jsonCharsMatch = lowNibblesMatch & highNibblesMatch;
+                        const charsMatch = lowNibblesMatch & highNibblesMatch;
 
                         break :block .{
-                            notEqlToBits(jsonCharsMatch & JSON_CHAR_TABLES.CONTROL_CHARS_FLAG, @splat(0)),
-                            notEqlToBits(jsonCharsMatch & JSON_CHAR_TABLES.WHITESPACE_FLAG, @splat(0)),
+                            notEqlToBits(charsMatch & JSON_CHAR_TABLES.CONTROL_CHARS_FLAG, @splat(0)),
+                            notEqlToBits(charsMatch & JSON_CHAR_TABLES.WHITESPACE_FLAG, @splat(0)),
                         };
                     },
                     32 => {
@@ -245,11 +246,11 @@ pub fn next(self: *Tokenizer) usize {
                         const firstHalfMatch: @Vector(16, u8) = nibblesMatchHalves[0..16];
                         const secondHalfMatch: @Vector(16, u8) = nibblesMatchHalves[16..];
 
-                        const jsonCharsMatch = firstHalfMatch & secondHalfMatch;
+                        const charsMatch = firstHalfMatch & secondHalfMatch;
 
                         break :block .{
-                            notEqlToBits(jsonCharsMatch & JSON_CHAR_TABLES.CONTROL_CHARS_FLAG, @splat(0)),
-                            notEqlToBits(jsonCharsMatch & JSON_CHAR_TABLES.WHITESPACE_FLAG, @splat(0)),
+                            notEqlToBits(charsMatch & JSON_CHAR_TABLES.CONTROL_CHARS_FLAG, @splat(0)),
+                            notEqlToBits(charsMatch & JSON_CHAR_TABLES.WHITESPACE_FLAG, @splat(0)),
                         };
                     },
                     64 => {
@@ -258,15 +259,15 @@ pub fn next(self: *Tokenizer) usize {
                         const highNibblesMatch =
                             simd.x86.shuffleVector512(jsonCharHighNibbleTable, highNibbles);
 
-                        const jsonCharsMatch = lowNibblesMatch & highNibblesMatch;
+                        const charsMatch = lowNibblesMatch & highNibblesMatch;
 
                         break :block .{
                             simd.x86.andToBits512(
-                                jsonCharsMatch,
+                                charsMatch,
                                 @splat(JSON_CHAR_TABLES.CONTROL_CHARS_FLAG),
                             ),
                             simd.x86.andToBits512(
-                                jsonCharsMatch,
+                                charsMatch,
                                 @splat(JSON_CHAR_TABLES.WHITESPACE_FLAG),
                             ),
                         };
@@ -291,15 +292,15 @@ pub fn next(self: *Tokenizer) usize {
             self.isStringOpened = isStringsMaskOpened(stringsMask);
             self.isStringEndedWithEscaping = isStringEndedWithEscaping;
 
-            const controlAndValueCharsMask = getControlAndValueCharsMask(
+            const jsonCharsMask = getJsonCharsMask(
                 anyControlCharsMask,
                 anyWhitespacesMask,
                 stringsMask,
             );
 
-            if (controlAndValueCharsMask != 0) {
-                const charIndex = utils.getTrailBitIndex(controlAndValueCharsMask);
-                self.controlAndValueCharsMask = utils.omitTrailBit(controlAndValueCharsMask);
+            if (jsonCharsMask != 0) {
+                const charIndex = utils.countTrailZeros(jsonCharsMask);
+                self.prevJsonCharsMask = utils.omitTrailBit(jsonCharsMask);
                 return charIndex;
             } else return NEXT_TRIVIA;
         },
@@ -307,24 +308,23 @@ pub fn next(self: *Tokenizer) usize {
             const is128BitVector = comptime simd.aarch64.is128BitVector();
             const isVariableLenVector = comptime simd.aarch64.isVariableLenVector();
 
-            comptime if (!(is128BitVector or isVariableLenVector)) break :simd;
+            if (comptime !(is128BitVector or isVariableLenVector)) break :simd;
 
             const maxVectorLen = 16;
 
             if (maxVectorLen > source.len) break :simd;
-
-            const prevControlAndValueCharsMask = self.controlAndValueCharsMask;
-            if (prevControlAndValueCharsMask != 0) {
-                const charIndex = utils.getTrailBitIndex(prevControlAndValueCharsMask);
-                self.controlAndValueCharsMask = prevControlAndValueCharsMask;
+            const prevJsonCharsMask = self.prevJsonCharsMask;
+            if (prevJsonCharsMask != 0) {
+                const charIndex = utils.countTrailZeros(prevJsonCharsMask);
+                self.prevJsonCharsMask = utils.omitTrailBit(prevJsonCharsMask);
                 return charIndex;
             }
 
             const chunk: @Vector(maxVectorLen, u8) = source[0..maxVectorLen].*;
 
-            const jsonCharLowNibbleTable: @Vector(maxVectorLen, u8) = JSON_CHAR_TABLES.LOW_NIBBLE_TABLE;
+            const jsonCharLowNibbleTable: @Vector(chunk.len, u8) = JSON_CHAR_TABLES.LOW_NIBBLE_TABLE;
             const jsonCharHighNibbleTable =
-                simd.expandVector(JSON_CHAR_TABLES.HIGH_NIBBLE_TABLE, maxVectorLen);
+                simd.expandVector(JSON_CHAR_TABLES.HIGH_NIBBLE_TABLE, chunk.len);
 
             const anyControlCharsMask, const anyWhitespacesMask = block: {
                 const lowNibbles = simd.getLowNibbles(chunk);
@@ -339,14 +339,14 @@ pub fn next(self: *Tokenizer) usize {
                     jsonCharHighNibbleTable,
                 );
 
-                const jsonCharsMatch = lowNibblesMatch & highNibblesMatch;
+                const charsMatch = lowNibblesMatch & highNibblesMatch;
                 break :block .{
                     simd.aarch64.notEqlToBits128(
-                        jsonCharsMatch & JSON_CHAR_TABLES.CONTROL_CHARS_FLAG,
+                        charsMatch & JSON_CHAR_TABLES.CONTROL_CHARS_FLAG,
                         @splat(0),
                     ),
                     simd.aarch64.notEqlToBits128(
-                        jsonCharsMatch & JSON_CHAR_TABLES.WHITESPACE_FLAG,
+                        charsMatch & JSON_CHAR_TABLES.WHITESPACE_FLAG,
                         @splat(0),
                     ),
                 };
@@ -366,7 +366,7 @@ pub fn next(self: *Tokenizer) usize {
                 break :block .{ result.stringsMask, result.isStringEndedWithEscaping };
             };
 
-            const controlAndValueCharsMask = getControlAndValueCharsMask(
+            const jsonCharsMask = getJsonCharsMask(
                 anyControlCharsMask,
                 anyWhitespacesMask,
                 stringsMask,
@@ -375,13 +375,39 @@ pub fn next(self: *Tokenizer) usize {
             self.isStringOpened = isStringsMaskOpened(stringsMask);
             self.isStringEndedWithEscaping = isStringEndedWithEscaping;
 
-            if (controlAndValueCharsMask != 0) {
-                const charIndex = utils.getTrailBitIndex(controlAndValueCharsMask);
-                self.controlAndValueCharsMask = utils.omitTrailBit(controlAndValueCharsMask);
+            if (jsonCharsMask != 0) {
+                const charIndex = utils.countTrailZeros(jsonCharsMask);
+                self.prevJsonCharsMask = utils.omitTrailBit(jsonCharsMask);
                 return charIndex;
             } else return NEXT_TRIVIA;
         },
     }
+}
+
+/// Returns a mask where every bit of control chars and starts of JSON values is set to 1.
+///
+/// The result doesn't include ends of JSON values.
+///
+/// Any opaque sequence of chars that are not control or whitespaces is treated as a JSON value.
+///
+/// That is, for `"abc"123`, `10000000` is returned, 'cause it is treated as a single value.
+///
+/// The same is for `truefalse123"string"`, `nullfalse` and the like.
+///
+/// `anyControlCharsMask` and `anyWhitespacesMask` can contain
+/// chars inside strings, which are filtered by this function.
+inline fn getJsonCharsMask(anyControlCharsMask: u64, anyWhitespacesMask: u64, stringsMask: u64) u64 {
+    // { "\\\"Nam[{": [ 116,"\\\\" , 234, "true", false ], "t":"\\\"" }
+    // __1111111111_________11111_________11111____________11__11111___ S
+    // 1____________1_1____1_______1____1_______1_______11____1_______1 C = anyC & ~S
+    // _1____________1_1__________1_1____1_______1_____1__1__________1_ W = anyW & ~S
+    // 11___________1111___1______111___11______11_____1111___1______11 CW = C | W
+    // _11___________1111___1______111___11______11_____1111___1______1 CV = CW << 1
+    // 1_111111111111_1_1111111111_1_1111_1111111_11111_11_1111111111_1 W = ~W
+    // __1____________1_1___1______1_1____1_______1_____11_1___1______1 CV &= W
+    const controlAndSpacesMask = (anyControlCharsMask | anyWhitespacesMask) & ~stringsMask;
+
+    return (controlAndSpacesMask << 1) & ~anyWhitespacesMask;
 }
 
 /// Returns a mask, where 1 is at bit indexes of chars inside strings.
@@ -502,32 +528,6 @@ inline fn getEscapedCharsMask(
         .escapedCharsMask = evenEscapedCharsMask | oddEscapedCharsMask,
         .isStringEndedWithEscaping = isBackslashMaskEndedWithEscaping(actualBackslashMask),
     };
-}
-
-/// Returns a mask where every bit of control chars and starts of JSON values is set to 1.
-///
-/// The result doesn't include ends of JSON values.
-///
-/// Any opaque sequence of chars that are not control or whitespaces is treated as a JSON value.
-///
-/// That is, for `"abc"123`, `10000000` is returned, 'cause it is treated as a single value.
-///
-/// The same is for `truefalse123"string"`, `nullfalse` and the like.
-///
-/// `anyControlCharsMask` and `anyWhitespacesMask` can contain
-/// chars inside strings, which are filtered by this function.
-inline fn getControlAndValueCharsMask(anyControlCharsMask: u64, anyWhitespacesMask: u64, stringsMask: u64) u64 {
-    // { "\\\"Nam[{": [ 116,"\\\\" , 234, "true", false ], "t":"\\\"" }
-    // __1111111111_________11111_________11111____________11__11111___ S
-    // 1____________1_1____1_______1____1_______1_______11____1_______1 C = anyC & ~S
-    // _1____________1_1__________1_1____1_______1_____1__1__________1_ W = anyW & ~S
-    // 11___________1111___1______111___11______11_____1111___1______11 CW = C | W
-    // _11___________1111___1______111___11______11_____1111___1______1 CV = CW << 1
-    // 1_111111111111_1_1111111111_1_1111_1111111_11111_11_1111111111_1 W = ~W
-    // __1____________1_1___1______1_1____1_______1_____11_1___1______1 CV &= W
-    const controlAndSpacesMask = (anyControlCharsMask | anyWhitespacesMask) & ~stringsMask;
-
-    return (controlAndSpacesMask << 1) & ~anyWhitespacesMask;
 }
 
 /// `actualBackslashMask` must be already actualized via
