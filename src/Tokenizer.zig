@@ -9,6 +9,22 @@ const builtin = @import("builtin");
 const utils = @import("utils.zig");
 const simd = @import("simd.zig");
 
+/// Doesn't contain the full source.
+/// Instead, it starts with the end of the previously handled part.
+source: []const u8,
+
+/// Mask, representing positions of control chars in `source`.
+///
+/// Bits of it are set to `1` only if they
+/// contain a control char or a start of JSON value.
+prevJsonCharsMask: u64,
+
+/// Used to correctly validate strings intersecting the bounds of SIMD-chunks.
+stringContext: StringContext,
+
+/// Used to correctly validate encoding at the bounds of SIMD-chunks.
+encodingContext: EncodingContext,
+
 const CPU = builtin.cpu;
 
 /// Contains `LOW_NIBBLE_TABLE` and `HIGH_NIBBLE_TABLE` constant-arrays,
@@ -103,22 +119,6 @@ const JSON_CHAR_TABLES = block: {
     };
 };
 
-/// Doesn't contain the full source.
-/// Instead, it starts with the end of the previously handled part.
-source: []const u8,
-
-/// Mask, representing positions of control chars in `source`.
-///
-/// Bits of it are set to `1` only if they
-/// contain a control char or a start of JSON value.
-prevJsonCharsMask: u64,
-
-/// Used to correctly validate strings intersecting the bounds of SIMD-chunks.
-stringContext: StringContext,
-
-/// Used to correctly validate encoding at the bounds of SIMD-chunks.
-encodingContext: EncodingContext,
-
 pub fn init(source: []const u8) Tokenizer {
     return .{
         .source = source,
@@ -128,7 +128,7 @@ pub fn init(source: []const u8) Tokenizer {
     };
 }
 
-const StringContext = struct {
+pub const StringContext = struct {
     /// Contains all bits set to `1` when the current SIMD-chunk
     /// ends with an unclosed string, or all bits set to `0` if it doesn't.
     isStringOpened: u64,
@@ -145,13 +145,13 @@ const StringContext = struct {
     isStringEndedWithEscaping: u64,
 };
 
-const EncodingContext = struct {
+pub const EncodingContext = struct {
     prevChunk: @Vector(64, u8),
     prevThreeByteLeads: @Vector(64, u8),
     prevFourByteLeads: @Vector(64, u8),
 };
 
-const NextReturnType = @typeInfo(@TypeOf(next)).@"fn".return_type.?;
+pub const NextReturnType = @typeInfo(@TypeOf(next)).@"fn".return_type.?;
 
 /// `next` function returns this value to indicate the end of `source`.
 pub const NEXT_END: NextReturnType =

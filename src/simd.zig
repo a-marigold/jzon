@@ -113,7 +113,6 @@ pub const x86 = struct {
     /// returns a non-zero value. Otherwise, returns 0.
     pub inline fn greaterThan128(a: @Vector(16, u8), b: @Vector(16, u8)) bool {
         var bClone = b;
-
         // TODO: check avx2 penalty because of 128-bit registers
 
         const comparedVector = asm (
