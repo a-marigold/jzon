@@ -113,22 +113,8 @@ source: []const u8,
 /// contain a control char or a start of JSON value.
 prevJsonCharsMask: u64,
 
-// TODO: contexts
-
-/// Contains all bits set to `1` when the current SIMD-chunk
-/// ends with an unclosed string, or all bits set to `0` if it doesn't.
-isStringOpened: u64,
-
-/// Contains number `1` when the current SIMD-chunk has
-/// an unclosed string and the last char of this string
-/// has a backslash which escapes a char of the next SIMD-chunk.
-///
-/// Contains `0` if the current SIMD-chunk
-/// doesn't end with an unclosed string or
-/// the unclosed string doesn't have a backslash like that.
-///
-/// Used to handle string escaping accros SIMD-chunks.
-isStringEndedWithEscaping: u64,
+/// Used to correctly validate strings intersecting the bounds of SIMD-chunks.
+stringContext: StringContext,
 
 /// Used to correctly validate encoding at the bounds of SIMD-chunks.
 encodingContext: EncodingContext,
@@ -142,8 +128,25 @@ pub fn init(source: []const u8) Tokenizer {
     };
 }
 
+const StringContext = struct {
+    /// Contains all bits set to `1` when the current SIMD-chunk
+    /// ends with an unclosed string, or all bits set to `0` if it doesn't.
+    isStringOpened: u64,
+
+    /// Contains number `1` when the current SIMD-chunk has
+    /// an unclosed string and the last char of this string
+    /// has a backslash which escapes a char of the next SIMD-chunk.
+    ///
+    /// Contains `0` if the current SIMD-chunk
+    /// doesn't end with an unclosed string or
+    /// the unclosed string doesn't have a backslash like that.
+    ///
+    /// Used to handle string escaping accros SIMD-chunks.
+    isStringEndedWithEscaping: u64,
+};
+
 const EncodingContext = struct {
-    prev: @Vector(64, u8),
+    prevChunk: @Vector(64, u8),
     prevThreeByteLeads: @Vector(64, u8),
     prevFourByteLeads: @Vector(64, u8),
 };
@@ -276,21 +279,20 @@ pub fn next(self: *Tokenizer) usize {
                 }
             };
 
-            const stringsMask, const isStringEndedWithEscaping = block: {
+            const stringsMask, const stringsMaskContext = block: {
                 const anyQuotesMask: u64 = eqlToBits(chunk, @splat('"'));
                 const backslashMask: u64 = eqlToBits(chunk, @splat('\\'));
 
                 const result = getStringsMask(
                     anyQuotesMask,
                     backslashMask,
-                    self.isStringOpened,
-                    self.isStringEndedWithEscaping,
+                    self.stringContext,
                 );
-                break :block .{ result.stringsMask, result.isStringEndedWithEscaping };
+
+                break :block .{ result.stringsMask, result.stringsMaskContext };
             };
 
-            self.isStringOpened = isStringsMaskOpened(stringsMask);
-            self.isStringEndedWithEscaping = isStringEndedWithEscaping;
+            self.stringContext = stringsMaskContext;
 
             const jsonCharsMask = getJsonCharsMask(
                 anyControlCharsMask,
@@ -352,18 +354,16 @@ pub fn next(self: *Tokenizer) usize {
                 };
             };
 
-            const stringsMask, const isStringEndedWithEscaping = block: {
+            const stringsMask, const stringsMaskContext = block: {
                 const anyQuotesMask = simd.aarch64.eqlToBits128(chunk, @splat('"'));
-
                 const backslashMask = simd.aarch64.eqlToBits128(chunk, @splat('\\'));
 
                 const result = getStringsMask(
                     anyQuotesMask,
                     backslashMask,
-                    self.isStringOpened,
-                    self.isStringEndedWithEscaping,
+                    self.stringContext,
                 );
-                break :block .{ result.stringsMask, result.isStringEndedWithEscaping };
+                break :block .{ result.stringsMask, result.stringsMaskContext };
             };
 
             const jsonCharsMask = getJsonCharsMask(
@@ -372,8 +372,7 @@ pub fn next(self: *Tokenizer) usize {
                 stringsMask,
             );
 
-            self.isStringOpened = isStringsMaskOpened(stringsMask);
-            self.isStringEndedWithEscaping = isStringEndedWithEscaping;
+            self.stirngContext = stringsMaskContext;
 
             if (jsonCharsMask != 0) {
                 const charIndex = utils.countTrailZeros(jsonCharsMask);
@@ -416,17 +415,14 @@ inline fn getJsonCharsMask(anyControlCharsMask: u64, anyWhitespacesMask: u64, st
 inline fn getStringsMask(
     anyQuotesMask: u64,
     backslashMask: u64,
-    isPrevStringOpened: @FieldType(Tokenizer, "isStringOpened"),
-    isPrevStringEndedWithEscaping: @FieldType(Tokenizer, "isStringEndedWithEscaping"),
-) struct {
-    stringsMask: u64,
-    isStringEndedWithEscaping: @FieldType(Tokenizer, "isStringEndedWithEscaping"),
-} {
+    stringContext: StringContext,
+) struct { stringsMask: u64, stringsMaskContext: StringContext } {
     const escapedCharsMask, const isStringEndedWithEscaping = block: {
         const result = getEscapedCharsMask(
             backslashMask,
-            isPrevStringEndedWithEscaping,
+            stringContext.isStringEndedWithEscaping,
         );
+
         break :block .{ result.escapedCharsMask, result.isStringEndedWithEscaping };
     };
 
@@ -436,11 +432,17 @@ inline fn getStringsMask(
     const stringsMask = utils.getBitsPrefixXor(unescapedQuotesMask);
 
     // If the prev SIMD-chunk has an unclosed string,
-    // `isPrevStringOpened` contains all bits set to 1,
+    // `stringContext.isStringOpened` contains all bits set to 1,
     // and XOR with the string mask and `isPrevStringOpened` inverts strings
-    const actualStringsMask = stringsMask ^ isPrevStringOpened;
+    const actualStringsMask = stringsMask ^ stringContext.isStringOpened;
 
-    return .{ .stringsMask = actualStringsMask, .isStringEndedWithEscaping = isStringEndedWithEscaping };
+    return .{
+        .stringsMask = actualStringsMask,
+        .stringsMaskContext = .{
+            .isStringOpened = isStringsMaskOpened(actualStringsMask),
+            .isStringEndedWithEscaping = isStringEndedWithEscaping,
+        },
+    };
 }
 
 /// If `stringsMask` contains an opened, unclosed string at the end,
@@ -466,10 +468,10 @@ inline fn isStringsMaskOpened(stringsMask: u64) u64 {
 /// and returns `0`.
 inline fn getEscapedCharsMask(
     backslashMask: u64,
-    isPrevStringEndedWithEscaping: @FieldType(Tokenizer, "isStringEndedWithEscaping"),
+    isPrevStringEndedWithEscaping: @FieldType(StringContext, "isStringEndedWithEscaping"),
 ) struct {
     escapedCharsMask: u64,
-    isStringEndedWithEscaping: @FieldType(Tokenizer, "isStringEndedWithEscaping"),
+    isStringEndedWithEscaping: @FieldType(StringContext, "isStringEndedWithEscaping"),
 } {
     const evenBitsMask = comptime utils.genEvenBitsMask();
     const oddBitsMask = comptime ~evenBitsMask;
@@ -505,14 +507,12 @@ inline fn getEscapedCharsMask(
         // and `evenBackslashEnds & oddBitsMask` perfectly checks it
         break :block evenBackslashEnds & oddBitsMask;
     };
-
     const oddEscapedCharsMask = block: {
         // Get only backslashes starting at odd indexes
         const oddBackslashStarts = actualBackslashStarts & oddBitsMask;
 
         // Contains ends of backslash sequences, starting with an even bit index,
         // and the ends are shifted to the left by 1
-
         const oddBackslashEnds = utils.getEndsOfMaskSequences(
             backslashMask,
             oddBackslashStarts,
@@ -539,7 +539,7 @@ inline fn getEscapedCharsMask(
 inline fn isBackslashMaskEndedWithEscaping(actualBackslashMask: u64) u64 {
     // Amount of backslashes that are at the very end
     // of the mask and that touch its highest bit
-    const endBackslashCount = utils.getLeadBitIndex(~actualBackslashMask);
+    const endBackslashCount = utils.countLeadZeros(~actualBackslashMask);
 
     // If the count is odd, return 1 (`oddNum & 1 == 1`)
     // Otherwise, return 0 (`evenNum & 1 == 0`)
