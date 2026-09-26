@@ -147,166 +147,168 @@ const UTF8_FOUR_BYTE_LEAD_TABLES = block: {
     };
 };
 
-/// Returns `true` when `vector` with JSON chars contains not only the ASCII-chars.
-///
-/// Otherwise, returns `false`.
-inline fn isVectorNonAscii_x86(vector: anytype) bool {
-    // All ASCII chars have the highest bit set to 0
-    const onlyHighBitsVector: @TypeOf(vector) = @splat(0b10000000);
+pub const x86 = struct {
+    /// Returns `true` only if `chunk` of JSON chars has valid UTF-8.
+    pub inline fn validateEncoding(
+        chunk: anytype,
+        /// High nibbles of the initial `chunk` are needed
+        /// in this function, but low nibbles are not.
+        /// Also, high nibbles are computed in `Tokenizer.next` in any way.
+        /// So, receive it as an argument not to compute it twice.
+        chunkHighNibbles: @TypeOf(chunk),
+        encodingContext: Tokenizer.EncodingContext,
+        comptime maxVectorLen: comptime_int,
+    ) bool {
+        // Fast path
+        if (isVectorNonAscii(chunk))
+            return true;
 
-    return switch (comptime vector.len) {
-        64 => simd.x86.andToBits512(vector, onlyHighBitsVector) != 0,
+        const leadByteLowNibbleTable = comptime block: {
+            const tableArray = UTF8_INVALID_CHAR_TABLES.LEAD_BYTE_LOW_NIBBLE_TABLE;
+            const tableVector: @Vector(tableArray.len, u8) = tableArray;
 
-        else => unreachable,
-        16 => simd.x86.notEqlToBits128(vector & onlyHighBitsVector, 0) != 0,
-    };
-}
+            break :block simd.expandVector(tableVector, chunk.len);
+        };
+        const leadByteHighNibbleTable = comptime block: {
+            const tableArray = UTF8_INVALID_CHAR_TABLES.LEAD_BYTE_HIGH_NIBBLE_TABLE;
+            const tableVector: @Vector(tableArray.len, u8) = tableArray;
 
-/// Returns `true` only if `chunk` of JSON chars has valid UTF-8.
-inline fn validateEncoding_x86(
-    chunk: anytype,
-    /// High nibbles of the initial `chunk` are needed
-    /// in this function, but low nibbles are not.
-    /// Also, high nibbles are computed in `Tokenizer.next` in any way.
-    /// So, receive it as an argument not to compute it twice.
-    chunkHighNibbles: @TypeOf(chunk),
-    encodingContext: Tokenizer.EncodingContext,
-    comptime maxVectorLen: comptime_int,
-) bool {
-    // Fast path
-    if (isVectorNonAscii_x86(chunk))
-        return true;
+            break :block simd.expandVector(tableVector, chunk.len);
+        };
 
-    const leadByteLowNibbleTable = comptime block: {
-        const tableArray = UTF8_INVALID_CHAR_TABLES.LEAD_BYTE_LOW_NIBBLE_TABLE;
-        const tableVector: @Vector(tableArray.len, u8) = tableArray;
+        const nextByteHighNibbleTable = comptime block: {
+            const tableArray = UTF8_INVALID_CHAR_TABLES.NEXT_BYTE_HIGH_NIBBLE_TABLE;
+            const tableVector: @Vector(tableArray.len, u8) = tableArray;
 
-        break :block simd.expandVector(tableVector, chunk.len);
-    };
-    const leadByteHighNibbleTable = comptime block: {
-        const tableArray = UTF8_INVALID_CHAR_TABLES.LEAD_BYTE_HIGH_NIBBLE_TABLE;
-        const tableVector: @Vector(tableArray.len, u8) = tableArray;
+            break :block simd.expandVector(tableVector, chunk.len);
+        };
 
-        break :block simd.expandVector(tableVector, chunk.len);
-    };
+        const threeByteLeadLowNibbleTable = comptime block: {
+            const tableArray = UTF8_THREE_BYTE_LEAD_TABLES.LOW_NIBBLE_TABLE;
+            const tableVector: @Vector(tableArray.len, u8) = tableArray;
 
-    const nextByteHighNibbleTable = comptime block: {
-        const tableArray = UTF8_INVALID_CHAR_TABLES.NEXT_BYTE_HIGH_NIBBLE_TABLE;
-        const tableVector: @Vector(tableArray.len, u8) = tableArray;
+            break :block simd.expandVector(tableVector, chunk.len);
+        };
+        const threeByteLeadHighNibbleTable = comptime block: {
+            const tableArray = UTF8_THREE_BYTE_LEAD_TABLES.HIGH_NIBBLE_TABLE;
+            const tableVector: @Vector(tableArray.len, u8) = tableArray;
 
-        break :block simd.expandVector(tableVector, chunk.len);
-    };
+            break :block simd.expandVector(tableVector, chunk.len);
+        };
+        const fourByteLeadLowNibbleTable = comptime block: {
+            const tableArray = UTF8_FOUR_BYTE_LEAD_TABLES.LOW_NIBBLE_TABLE;
+            const tableVector: @Vector(tableArray.len, u8) = tableArray;
 
-    const threeByteLeadLowNibbleTable = comptime block: {
-        const tableArray = UTF8_THREE_BYTE_LEAD_TABLES.LOW_NIBBLE_TABLE;
-        const tableVector: @Vector(tableArray.len, u8) = tableArray;
+            break :block simd.expandVector(tableVector, chunk.len);
+        };
+        const fourByteLeadHighNibbleTable = comptime block: {
+            const tableArray = UTF8_FOUR_BYTE_LEAD_TABLES.HIGH_NIBBLE_TABLE;
+            const tableVector: @Vector(tableArray.len, u8) = tableArray;
 
-        break :block simd.expandVector(tableVector, chunk.len);
-    };
-    const threeByteLeadHighNibbleTable = comptime block: {
-        const tableArray = UTF8_THREE_BYTE_LEAD_TABLES.HIGH_NIBBLE_TABLE;
-        const tableVector: @Vector(tableArray.len, u8) = tableArray;
+            break :block simd.expandVector(tableVector, chunk.len);
+        };
 
-        break :block simd.expandVector(tableVector, chunk.len);
-    };
-    const fourByteLeadLowNibbleTable = comptime block: {
-        const tableArray = UTF8_FOUR_BYTE_LEAD_TABLES.LOW_NIBBLE_TABLE;
-        const tableVector: @Vector(tableArray.len, u8) = tableArray;
+        const mergeShiftRight = comptime switch (chunk.len) {
+            64 => simd.x86.mergeShiftRight512,
+            16 => simd.x86.mergeShiftRight128,
+            else => unreachable,
+        };
 
-        break :block simd.expandVector(tableVector, chunk.len);
-    };
-    const fourByteLeadHighNibbleTable = comptime block: {
-        const tableArray = UTF8_FOUR_BYTE_LEAD_TABLES.HIGH_NIBBLE_TABLE;
-        const tableVector: @Vector(tableArray.len, u8) = tableArray;
+        const chunkWithPrev = mergeShiftRight(encodingContext.prevChunk, chunk, 1);
 
-        break :block simd.expandVector(tableVector, chunk.len);
-    };
+        const chunkWithPrevLowNibbles = simd.getLowNibbles(chunkWithPrev);
+        const chunkWithPrevHighNibbles = simd.getHighNibbles(chunkWithPrev);
 
-    const mergeShiftRight = comptime switch (chunk.len) {
-        64 => simd.x86.mergeShiftRight512,
-        16 => simd.x86.mergeShiftRight128,
-        else => unreachable,
-    };
-
-    const chunkWithPrev = mergeShiftRight(encodingContext.prevChunk, chunk, 1);
-
-    const chunkWithPrevLowNibbles = simd.getLowNibbles(chunkWithPrev);
-    const chunkWithPrevHighNibbles = simd.getHighNibbles(chunkWithPrev);
-
-    switch (comptime maxVectorLen) {
-        64 => {
-            const invalidBytes = block: {
-                const leadByteLowNibbleErrors = simd.x86.shuffleVector512(
-                    leadByteLowNibbleTable,
-                    chunkWithPrevLowNibbles,
-                );
-                const leadByteHighNibbleErrors = simd.x86.shuffleVector512(
-                    leadByteHighNibbleTable,
-                    chunkWithPrevHighNibbles,
-                );
-                const nextByteHighNibbleErrors = simd.x86.shuffleVector512(
-                    nextByteHighNibbleTable,
-                    chunkHighNibbles,
-                );
-
-                break :block simd.x86.tripleAnd512(
-                    leadByteLowNibbleErrors,
-                    leadByteHighNibbleErrors,
-                    nextByteHighNibbleErrors,
-                );
-            };
-
-            const doubleContinuationMask = UTF8_INVALID_CHAR_TABLES.DOUBLE_CONTINUATION_FLAG;
-            const errorMask = comptime ~doubleContinuationMask;
-
-            if (simd.x86.isNonZero512(invalidBytes & errorMask))
-                return false;
-
-            const threeByteLeads = block: {
-                const lowNibblesMatch =
-                    simd.x86.shuffleVector512(threeByteLeadLowNibbleTable, chunkWithPrevLowNibbles);
-                const highNibblesMatch =
-                    simd.x86.shuffleVector512(threeByteLeadHighNibbleTable, chunkWithPrevHighNibbles);
-
-                break :block lowNibblesMatch & highNibblesMatch;
-            };
-
-            const fourByteLeads = block: {
-                const lowNibblesMatch =
-                    simd.x86.shuffleVector512(fourByteLeadLowNibbleTable, chunkWithPrevLowNibbles);
-                const highNibblesMatch =
-                    simd.x86.shuffleVector512(fourByteLeadHighNibbleTable, chunkWithPrevHighNibbles);
-
-                break :block lowNibblesMatch & highNibblesMatch;
-            };
-
-            const doubleContinuationStarts = invalidBytes & doubleContinuationMask;
-
-            const expectedDoubleContinuationStarts = block: {
-                const expectedThreeByteContinuationStarts = mergeShiftRight(
-                    encodingContext.prevThreeByteLeads,
-                    threeByteLeads,
-                    1,
-                );
-
-                const expectedFourByteContinuationStarts =
-                    mergeShiftRight(
-                        encodingContext.prevFourByteLeads,
-                        fourByteLeads,
-                        1,
-                    ) | mergeShiftRight(
-                        encodingContext.prevFourByteLeads,
-                        fourByteLeads,
-                        2,
+        switch (comptime maxVectorLen) {
+            64 => {
+                const invalidBytes = block: {
+                    const leadByteLowNibbleErrors = simd.x86.shuffleVector512(
+                        leadByteLowNibbleTable,
+                        chunkWithPrevLowNibbles,
+                    );
+                    const leadByteHighNibbleErrors = simd.x86.shuffleVector512(
+                        leadByteHighNibbleTable,
+                        chunkWithPrevHighNibbles,
+                    );
+                    const nextByteHighNibbleErrors = simd.x86.shuffleVector512(
+                        nextByteHighNibbleTable,
+                        chunkHighNibbles,
                     );
 
-                break :block expectedThreeByteContinuationStarts & expectedFourByteContinuationStarts;
-            };
+                    break :block simd.x86.tripleAnd512(
+                        leadByteLowNibbleErrors,
+                        leadByteHighNibbleErrors,
+                        nextByteHighNibbleErrors,
+                    );
+                };
 
-            if (simd.x86.isZero512(doubleContinuationStarts == expectedDoubleContinuationStarts))
-                return false;
-        },
+                const doubleContinuationMask = UTF8_INVALID_CHAR_TABLES.DOUBLE_CONTINUATION_FLAG;
+                const errorMask = comptime ~doubleContinuationMask;
+
+                if (simd.x86.isNonZero512(invalidBytes & errorMask))
+                    return false;
+
+                const threeByteLeads = block: {
+                    const lowNibblesMatch =
+                        simd.x86.shuffleVector512(threeByteLeadLowNibbleTable, chunkWithPrevLowNibbles);
+                    const highNibblesMatch =
+                        simd.x86.shuffleVector512(threeByteLeadHighNibbleTable, chunkWithPrevHighNibbles);
+
+                    break :block lowNibblesMatch & highNibblesMatch;
+                };
+
+                const fourByteLeads = block: {
+                    const lowNibblesMatch =
+                        simd.x86.shuffleVector512(fourByteLeadLowNibbleTable, chunkWithPrevLowNibbles);
+                    const highNibblesMatch =
+                        simd.x86.shuffleVector512(fourByteLeadHighNibbleTable, chunkWithPrevHighNibbles);
+
+                    break :block lowNibblesMatch & highNibblesMatch;
+                };
+
+                const doubleContinuationStarts = invalidBytes & doubleContinuationMask;
+
+                const expectedDoubleContinuationStarts = block: {
+                    const expectedThreeByteContinuationStarts = mergeShiftRight(
+                        encodingContext.prevThreeByteLeads,
+                        threeByteLeads,
+                        1,
+                    );
+
+                    const expectedFourByteContinuationStarts =
+                        mergeShiftRight(
+                            encodingContext.prevFourByteLeads,
+                            fourByteLeads,
+                            1,
+                        ) | mergeShiftRight(
+                            encodingContext.prevFourByteLeads,
+                            fourByteLeads,
+                            2,
+                        );
+
+                    break :block expectedThreeByteContinuationStarts & expectedFourByteContinuationStarts;
+                };
+
+                if (simd.x86.isZero512(doubleContinuationStarts == expectedDoubleContinuationStarts))
+                    return false;
+            },
+        }
+
+        return true;
     }
 
-    return true;
-}
+    /// Returns `true` when `vector` with JSON chars contains not only the ASCII-chars.
+    ///
+    /// Otherwise, returns `false`.
+    pub inline fn isVectorNonAscii(vector: anytype) bool {
+        // All ASCII chars have the highest bit set to 0
+        const onlyHighBitsVector: @TypeOf(vector) = @splat(0b10000000);
+
+        return switch (comptime vector.len) {
+            64 => simd.x86.andToBits512(vector, onlyHighBitsVector) != 0,
+
+            else => unreachable,
+            16 => simd.x86.notEqlToBits128(vector & onlyHighBitsVector, 0) != 0,
+        };
+    }
+};
