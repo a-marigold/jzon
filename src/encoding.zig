@@ -203,31 +203,6 @@ pub const x86 = struct {
             break :block simd.expandVector(tableVector, chunk.len);
         };
 
-        const threeByteLeadLowNibbleTable = comptime block: {
-            const tableArray = UTF8_THREE_BYTE_LEAD_TABLES.LOW_NIBBLE_TABLE;
-            const tableVector: @Vector(tableArray.len, u8) = tableArray;
-
-            break :block simd.expandVector(tableVector, chunk.len);
-        };
-        const threeByteLeadHighNibbleTable = comptime block: {
-            const tableArray = UTF8_THREE_BYTE_LEAD_TABLES.HIGH_NIBBLE_TABLE;
-            const tableVector: @Vector(tableArray.len, u8) = tableArray;
-
-            break :block simd.expandVector(tableVector, chunk.len);
-        };
-        const fourByteLeadLowNibbleTable = comptime block: {
-            const tableArray = UTF8_FOUR_BYTE_LEAD_TABLES.LOW_NIBBLE_TABLE;
-            const tableVector: @Vector(tableArray.len, u8) = tableArray;
-
-            break :block simd.expandVector(tableVector, chunk.len);
-        };
-        const fourByteLeadHighNibbleTable = comptime block: {
-            const tableArray = UTF8_FOUR_BYTE_LEAD_TABLES.HIGH_NIBBLE_TABLE;
-            const tableVector: @Vector(tableArray.len, u8) = tableArray;
-
-            break :block simd.expandVector(tableVector, chunk.len);
-        };
-
         const chunkWithPrevLowNibbles = simd.getLowNibbles(chunkWithPrev);
         const chunkWithPrevHighNibbles = simd.getHighNibbles(chunkWithPrev);
 
@@ -314,23 +289,16 @@ pub const x86 = struct {
                 },
             };
 
-        const threeByteLeads = block: {
-            const lowNibblesMatch =
-                simd.x86.shuffleVector512(threeByteLeadLowNibbleTable, chunkWithPrevLowNibbles);
-            const highNibblesMatch =
-                simd.x86.shuffleVector512(threeByteLeadHighNibbleTable, chunkWithPrevHighNibbles);
-
-            break :block lowNibblesMatch & highNibblesMatch;
-        };
-
-        const fourByteLeads = block: {
-            const lowNibblesMatch =
-                simd.x86.shuffleVector512(fourByteLeadLowNibbleTable, chunkWithPrevLowNibbles);
-            const highNibblesMatch =
-                simd.x86.shuffleVector512(fourByteLeadHighNibbleTable, chunkWithPrevHighNibbles);
-
-            break :block lowNibblesMatch & highNibblesMatch;
-        };
+        const threeByteLeads = getThreeByteLeads(
+            chunkWithPrevLowNibbles,
+            chunkWithPrevHighNibbles,
+            maxVectorLen,
+        );
+        const fourByteLeads = getFourByteLeads(
+            chunkWithPrevLowNibbles,
+            chunkWithPrevHighNibbles,
+            maxVectorLen,
+        );
 
         const expectedDoubleContinuationStarts = block: {
             const expectedThreeByteContinuationStarts = mergeShiftRight(
@@ -377,6 +345,101 @@ pub const x86 = struct {
                 .prevFourByteLeads = fourByteLeads,
             },
         };
+    }
+
+    inline fn getThreeByteLeads(
+        chunkLowNibbles: anytype,
+        chunkHighNibbles: @TypeOf(chunkLowNibbles),
+        comptime maxVectorLen: comptime_int,
+    ) @TypeOf(chunkLowNibbles) {
+        const chunkLen = chunkLowNibbles.len;
+
+        const threeByteLeadLowNibbleTable = comptime block: {
+            const tableArray = UTF8_THREE_BYTE_LEAD_TABLES.LOW_NIBBLE_TABLE;
+            const tableVector: @Vector(tableArray.len, u8) = tableArray;
+
+            break :block simd.expandVector(tableVector, chunkLen);
+        };
+        const threeByteLeadHighNibbleTable = comptime block: {
+            const tableArray = UTF8_THREE_BYTE_LEAD_TABLES.HIGH_NIBBLE_TABLE;
+            const tableVector: @Vector(tableArray.len, u8) = tableArray;
+
+            break :block simd.expandVector(tableVector, chunkLen);
+        };
+
+        switch (maxVectorLen) {
+            16 => {
+                const lowNibblesMatch =
+                    simd.x86.shuffleVector128(threeByteLeadLowNibbleTable, chunkLowNibbles);
+                const highNibblesMatch =
+                    simd.x86.shuffleVector128(threeByteLeadHighNibbleTable, chunkHighNibbles);
+
+                return lowNibblesMatch & highNibblesMatch;
+            },
+            32 => {
+                const matchHalves = simd.x86.shuffleVector256(
+                    threeByteLeadLowNibbleTable ++ threeByteLeadHighNibbleTable,
+                    chunkLowNibbles ++ chunkHighNibbles,
+                );
+
+                return matchHalves[0..16] & matchHalves[16..];
+            },
+            64 => {
+                const lowNibblesMatch =
+                    simd.x86.shuffleVector512(threeByteLeadLowNibbleTable, chunkLowNibbles);
+                const highNibblesMatch =
+                    simd.x86.shuffleVector512(threeByteLeadHighNibbleTable, chunkHighNibbles);
+
+                return lowNibblesMatch & highNibblesMatch;
+            },
+        }
+    }
+    inline fn getFourByteLeads(
+        chunkLowNibbles: anytype,
+        chunkHighNibbles: @TypeOf(chunkLowNibbles),
+        comptime maxVectorLen: comptime_int,
+    ) @TypeOf(chunkLowNibbles) {
+        const chunkLen = chunkLowNibbles.len;
+
+        const fourByteLeadLowNibbleTable = comptime block: {
+            const tableArray = UTF8_FOUR_BYTE_LEAD_TABLES.LOW_NIBBLE_TABLE;
+            const tableVector: @Vector(tableArray.len, u8) = tableArray;
+
+            break :block simd.expandVector(tableVector, chunkLen);
+        };
+        const fourByteLeadHighNibbleTable = comptime block: {
+            const tableArray = UTF8_FOUR_BYTE_LEAD_TABLES.HIGH_NIBBLE_TABLE;
+            const tableVector: @Vector(tableArray.len, u8) = tableArray;
+
+            break :block simd.expandVector(tableVector, chunkLen);
+        };
+
+        switch (maxVectorLen) {
+            16 => {
+                const lowNibblesMatch =
+                    simd.x86.shuffleVector128(fourByteLeadLowNibbleTable, chunkLowNibbles);
+                const highNibblesMatch =
+                    simd.x86.shuffleVector128(fourByteLeadHighNibbleTable, chunkHighNibbles);
+
+                return lowNibblesMatch & highNibblesMatch;
+            },
+            32 => {
+                const matchHalves = simd.x86.shuffleVector256(
+                    fourByteLeadLowNibbleTable ++ fourByteLeadHighNibbleTable,
+                    chunkLowNibbles ++ chunkHighNibbles,
+                );
+
+                return matchHalves[0..16] & matchHalves[16..];
+            },
+            64 => {
+                const lowNibblesMatch =
+                    simd.x86.shuffleVector512(fourByteLeadLowNibbleTable, chunkLowNibbles);
+                const highNibblesMatch =
+                    simd.x86.shuffleVector512(fourByteLeadHighNibbleTable, chunkHighNibbles);
+
+                return lowNibblesMatch & highNibblesMatch;
+            },
+        }
     }
 
     /// Returns `true` when `vector` with JSON chars contains not only the ASCII-chars.
