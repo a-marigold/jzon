@@ -163,7 +163,7 @@ pub const x86 = struct {
         chunkHighNibbles: @TypeOf(chunk),
         encodingContext: Tokenizer.EncodingContext,
         comptime maxVectorLen: comptime_int,
-    ) bool {
+    ) struct { isValid: bool, newEncodingContext: Tokenizer.EncodingContext } {
         const mergeShiftRight = comptime switch (chunk.len) {
             64 => simd.x86.mergeShiftRight512,
             16 => simd.x86.mergeShiftRight128,
@@ -174,7 +174,14 @@ pub const x86 = struct {
 
         // Fast path
         if (isVectorNonAscii(chunkWithPrev))
-            return true;
+            return .{
+                .isValid = true,
+                .newEncodingContext = .{
+                    .prevChunk = chunkWithPrev,
+                    .prevThreeByteLeads = @splat(0),
+                    .prevFourByteLeads = @splat(0),
+                },
+            };
 
         const leadByteLowNibbleTable = comptime block: {
             const tableArray = UTF8_INVALID_CHAR_TABLES.LEAD_BYTE_LOW_NIBBLE_TABLE;
@@ -251,7 +258,14 @@ pub const x86 = struct {
                 const errorMask = comptime ~doubleContinuationMask;
 
                 if (simd.x86.isNonZero512(invalidBytes & errorMask))
-                    return false;
+                    return .{
+                        .isValid = false,
+                        .newEncodingContext = .{
+                            .prevChunk = chunkWithPrev,
+                            .prevThreeByteLeads = @splat(0),
+                            .prevFourByteLeads = @splat(0),
+                        },
+                    };
 
                 const threeByteLeads = block: {
                     const lowNibblesMatch =
@@ -295,11 +309,25 @@ pub const x86 = struct {
                 };
 
                 if (simd.x86.isZero512(doubleContinuationStarts == expectedDoubleContinuationStarts))
-                    return false;
+                    return .{
+                        .isValid = false,
+                        .newEncodingContext = .{
+                            .prevChunk = chunkWithPrev,
+                            .prevThreeByteLeads = @splat(0),
+                            .prevFourByteLeads = @splat(0),
+                        },
+                    };
+
+                return .{
+                    .isValid = true,
+                    .newEncodingContext = .{
+                        .prevChunk = chunkWithPrev,
+                        .prevThreeByteLeads = threeByteLeads,
+                        .prevFourByteLeads = fourByteLeads,
+                    },
+                };
             },
         }
-
-        return true;
     }
 
     /// Returns `true` when `vector` with JSON chars contains not only the ASCII-chars.
