@@ -161,22 +161,22 @@ pub const x86 = struct {
         /// Also, high nibbles are computed in `Tokenizer.next` in any way.
         /// So, receive it as an argument not to compute it twice.
         chunkHighNibbles: @TypeOf(chunk),
-        encodingContext: Tokenizer.EncodingContext,
+        prevEncodingContext: Tokenizer.EncodingContext,
         comptime maxVectorLen: comptime_int,
-    ) struct { isValid: bool, newEncodingContext: Tokenizer.EncodingContext } {
-        const mergeShiftRight = comptime switch (chunk.len) {
-            16 => simd.x86.mergeShiftRight128,
+    ) struct { isValid: bool, encodingContext: Tokenizer.EncodingContext } {
+        const mergeShiftRight = comptime switch (maxVectorLen) {
+            16, 32 => simd.x86.mergeShiftRight128,
             64 => simd.x86.mergeShiftRight512,
             else => unreachable,
         };
 
-        const chunkWithPrev = mergeShiftRight(encodingContext.prevChunk, chunk, 1);
+        const chunkWithPrev = mergeShiftRight(prevEncodingContext.prevChunk, chunk, 1);
 
         // Fast path
         if (isVectorNonAscii(chunkWithPrev))
             return .{
                 .isValid = true,
-                .newEncodingContext = .{
+                .encodingContext = .{
                     .prevChunk = chunkWithPrev,
                     .prevThreeByteLeads = @splat(0),
                     .prevFourByteLeads = @splat(0),
@@ -282,7 +282,7 @@ pub const x86 = struct {
         if (isTwoByteError)
             return .{
                 .isValid = false,
-                .newEncodingContext = .{
+                .encodingContext = .{
                     .prevChunk = chunkWithPrev,
                     .prevThreeByteLeads = @splat(0),
                     .prevFourByteLeads = @splat(0),
@@ -302,18 +302,18 @@ pub const x86 = struct {
 
         const expectedDoubleContinuationStarts = block: {
             const expectedThreeByteContinuationStarts = mergeShiftRight(
-                encodingContext.prevThreeByteLeads,
+                prevEncodingContext.prevThreeByteLeads,
                 threeByteLeads,
                 1,
             );
 
             const expectedFourByteContinuationStarts =
                 mergeShiftRight(
-                    encodingContext.prevFourByteLeads,
+                    prevEncodingContext.prevFourByteLeads,
                     fourByteLeads,
                     1,
                 ) | mergeShiftRight(
-                    encodingContext.prevFourByteLeads,
+                    prevEncodingContext.prevFourByteLeads,
                     fourByteLeads,
                     2,
                 );
@@ -330,7 +330,7 @@ pub const x86 = struct {
         if (isDoubleContinuationError)
             return .{
                 .isValid = false,
-                .newEncodingContext = .{
+                .encodingContext = .{
                     .prevChunk = chunkWithPrev,
                     .prevThreeByteLeads = @splat(0),
                     .prevFourByteLeads = @splat(0),
@@ -339,7 +339,7 @@ pub const x86 = struct {
 
         return .{
             .isValid = true,
-            .newEncodingContext = .{
+            .encodingContext = .{
                 .prevChunk = chunkWithPrev,
                 .prevThreeByteLeads = threeByteLeads,
                 .prevFourByteLeads = fourByteLeads,
