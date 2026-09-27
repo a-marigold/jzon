@@ -149,6 +149,11 @@ const UTF8_FOUR_BYTE_LEAD_TABLES = block: {
 
 pub const x86 = struct {
     /// Returns `true` only if `chunk` of JSON chars has valid UTF-8.
+    ///
+    /// Contains a check of `chunk` on containing only ASCII,
+    /// which also specially handles the previous chunk.
+    /// Checking does `chunk` contain only ASCII
+    /// before calling this function can cause wrong results.
     pub inline fn validateEncoding(
         chunk: anytype,
         /// High nibbles of the initial `chunk` are needed
@@ -159,8 +164,16 @@ pub const x86 = struct {
         encodingContext: Tokenizer.EncodingContext,
         comptime maxVectorLen: comptime_int,
     ) bool {
+        const mergeShiftRight = comptime switch (chunk.len) {
+            64 => simd.x86.mergeShiftRight512,
+            16 => simd.x86.mergeShiftRight128,
+            else => unreachable,
+        };
+
+        const chunkWithPrev = mergeShiftRight(encodingContext.prevChunk, chunk, 1);
+
         // Fast path
-        if (isVectorNonAscii(chunk))
+        if (isVectorNonAscii(chunkWithPrev))
             return true;
 
         const leadByteLowNibbleTable = comptime block: {
@@ -207,14 +220,6 @@ pub const x86 = struct {
 
             break :block simd.expandVector(tableVector, chunk.len);
         };
-
-        const mergeShiftRight = comptime switch (chunk.len) {
-            64 => simd.x86.mergeShiftRight512,
-            16 => simd.x86.mergeShiftRight128,
-            else => unreachable,
-        };
-
-        const chunkWithPrev = mergeShiftRight(encodingContext.prevChunk, chunk, 1);
 
         const chunkWithPrevLowNibbles = simd.getLowNibbles(chunkWithPrev);
         const chunkWithPrevHighNibbles = simd.getHighNibbles(chunkWithPrev);
