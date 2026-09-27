@@ -109,22 +109,6 @@ pub const x86 = struct {
         return vectorToBits128(bool, a != b);
     }
 
-    /// If there's at least one `a` element that is more than `b` element,
-    /// returns a non-zero value. Otherwise, returns 0.
-    pub inline fn greaterThan128(a: @Vector(16, u8), b: @Vector(16, u8)) bool {
-        var bClone = b;
-        // TODO: check avx2 penalty because of 128-bit registers
-
-        const comparedVector = asm (
-            \\ pminub %[a], %[b]
-            \\ pxor %[a], %[b]
-            : [result] "=v" (-> @Vector(16, u8)),
-              [b] "=&v" (bClone),
-            : [a] "v" (a),
-        );
-        return vectorToBits128(u8, comparedVector) != 0;
-    }
-
     /// Compares each element of the two vectors producing a mask,
     /// where bit is set to 1 if the elements equal.
     pub inline fn eqlToBits512(a: @Vector(64, u8), b: @Vector(64, u8)) u64 {
@@ -150,12 +134,6 @@ pub const x86 = struct {
             : [a] "v" (a),
               [b] "v" (b),
         );
-    }
-
-    /// If there's at least one `a` element that is more than `b` element,
-    /// returns `true` value. Otherwise, returns `false`.
-    pub inline fn greaterThan512(a: @Vector(64, u8), b: @Vector(64, u8)) bool {
-        return @reduce(.Or, a > b);
     }
 
     /// Does bitwise AND between `a` and `b` and returns
@@ -335,15 +313,6 @@ pub const aarch64 = struct {
     pub inline fn notEqlToBits128(a: @Vector(16, u8), b: @Vector(16, u8)) u64 {
         return vectorToBits128(a != b);
     }
-
-    /// Returns `true` if there is at least
-    /// one element of `a`  that is more than `b` element.
-    ///
-    /// Otherwise, returns `false`.
-    pub inline fn greaterThan128(a: @Vector(16, u8), b: @Vector(16, u8)) bool {
-        return @reduce(.Max, a -| b);
-    }
-
     /// Example:
     ///
     /// `vector = .{ 0, 1, 2, 3 }`.
