@@ -23,18 +23,17 @@ pub const x86 = struct {
     ///
     /// Returns 64 only if the target is `avx512bw` (which supports 64-byte vector shuffles).
     /// If the target supports just `avx512`, 32 is returned.
-    pub inline fn getMaxVectorLen() ?comptime_int {
-        const features = CPU.features;
+    pub fn getMaxVectorLen() ?comptime_int {
         const hasFeature = Target.x86.featureSetHas;
 
         return if (hasFeature(
-            features,
+            CPU.features,
             .avx512bw, // Allows instructions with bytes within 512-bit registers
         ))
             64
-        else if (hasFeature(features, .avx2))
+        else if (hasFeature(CPU.features, .avx2))
             32
-        else if (hasFeature(features, .ssse3))
+        else if (hasFeature(CPU.features, .ssse3))
             16
         else
             null;
@@ -256,18 +255,22 @@ pub const x86 = struct {
 };
 
 pub const aarch64 = struct {
-    /// Returns `true` when 128-bit vector-shuffle is supported on `aarch64`.
-    pub inline fn is128BitVector() bool {
-        return Target.aarch64.featureSetHas(CPU.features, .neon);
+    /// Returns 0 if the length of vector registers is variable (`sve2`).
+    ///
+    /// Returns 16 in case of `neon` extension support.
+    ///
+    /// In case of lack of SIMD support, returns `null`.
+    pub fn getMaxVectorLen() ?comptime_int {
+        const hasFeature = Target.aarch64.featureSetHas;
+
+        return if (hasFeature(CPU.features, .sve2))
+            0
+        else if (hasFeature(CPU.features, .neon))
+            16
+        else
+            null;
     }
 
-    /// More preferred than `is128BitVector_aarch64` result.
-    ///
-    /// Returns `true` only when the `aarch64` target supports vectors with variable length (128-512 bit),
-    /// and only when the target supports 32-64 byte shuffles with them.
-    pub inline fn isVariableLenVector() bool {
-        return Target.aarch64.featureSetHas(CPU.features, .sve2);
-    }
     /// Calling this function without checking `isVariableVectorLen_aarch64` is illegal.
     ///
     /// Returns the length in bytes of one vector registers.
@@ -381,7 +384,7 @@ pub const aarch64 = struct {
     }
 };
 
-pub inline fn isMulCarrylessSupported() bool {
+pub fn isMulCarrylessSupported() bool {
     return switch (CPU.arch) {
         .x86_64 => Target.x86.featureSetHas(CPU.features, .pclmul),
         .aarch64 => Target.aarch64.featureSetHasAny(CPU.features, .{

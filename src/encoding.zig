@@ -321,8 +321,9 @@ pub const x86 = struct {
             break :block expectedThreeByteContinuationStarts & expectedFourByteContinuationStarts;
         };
 
+        // TODO: issue
         const isDoubleContinuationError = switch (comptime maxVectorLen) {
-            16, 32 => simd.x86.eqlToBits128(doubleContinuationStarts == expectedDoubleContinuationStarts) == 0,
+            16, 32 => simd.x86.eqlToBits128(doubleContinuationStarts, expectedDoubleContinuationStarts) == 0,
             64 => simd.x86.isZero512(doubleContinuationStarts == expectedDoubleContinuationStarts),
             else => unreachable,
         };
