@@ -3,11 +3,13 @@ const Tokenizer = @This();
 // TODO: clear docs and comments
 // TODO: flag of disabling encoding validation for strings
 // TODO: padding (https://arxiv.org/html/2010.03090v5#S6 --- 6.3)
+// TODO: vpternlog replaces most of ordered instructions
 
 const std = @import("std");
 const builtin = @import("builtin");
 const utils = @import("utils.zig");
 const simd = @import("simd.zig");
+const encoding = @import("encoding.zig");
 
 /// Doesn't contain the full source.
 /// Instead, it starts with the end of the previously handled part.
@@ -144,7 +146,6 @@ pub const StringContext = struct {
     /// Used to handle string escaping accros SIMD-chunks.
     isStringEndedWithEscaping: u64,
 };
-
 pub const EncodingContext = struct {
     prevChunk: @Vector(64, u8),
     prevThreeByteLeads: @Vector(64, u8),
@@ -175,8 +176,12 @@ pub const NEXT_UTF8_ERROR: NextReturnType =
 /// List of JSON chars, indexes of which can be returned:
 /// - `[`, `]`, `{`, `}`, `,`, `:`.
 /// - Starts of values: `"`, `t`, `f`, `n`, `0..9`, `-`,
-/// or anything at position of value (even invalid chars).
-// TODO: invalid UTF-8 at the very last source char can be treated as a value an it should be documented
+/// or anything at position of values (even invalid non-JSON chars).
+///
+/// **Note**: UTF-8 validation algorithm for some reason
+/// doesn't fully check the very last char of the very last chunk.
+/// In extremely rare cases, the char like that
+/// with invalid UTF-8 can be treated as a value.
 pub fn next(self: *Tokenizer) usize {
     const source = self.source;
 
@@ -189,31 +194,40 @@ pub fn next(self: *Tokenizer) usize {
                 return charIndex;
             }
 
-            // AVX2 (vectorLen == 32) has a specific shuffle vector instruction
-            // and uses not all 32 bytes of a SIMD chunk (see the code below)
+            // AVX2 (maxVectorLen == 32) has a specific shuffle vector instruction
+            // which uses not all 32 but only 16 bytes of a SIMD chunk
             const shuffleVectorLen = if (maxVectorLen == 32) 16 else maxVectorLen;
 
             const chunk: @Vector(shuffleVectorLen, u8) = source[0..shuffleVectorLen].*;
 
             if (chunk.len > source.len) break :simd;
 
+            const chunkLowNibbles = simd.getLowNibbles(chunk);
+            const chunkHighNibbles = simd.getHighNibbles(chunk);
+
+            const validateEncodingResult = encoding.x86.validateEncoding(
+                chunk,
+                chunkHighNibbles,
+                self.encodingContext,
+                maxVectorLen,
+            );
+
+            if (!validateEncodingResult.isValid) return NEXT_UTF8_ERROR;
             // TODO: check in ASM output if LLVM doesn't move tables initialization from loop
 
-            const jsonCharLowNibbleTable: @Vector(chunk.len, u8) = struct {
-                const TABLE = block: {
-                    const tableArray = JSON_CHAR_TABLES.LOW_NIBBLE_TABLE;
-                    const tableVector: @Vector(tableArray.len, u8) = tableArray;
-                    break :block simd.expandVector(tableVector, chunk.len);
-                };
-            }.TABLE;
-            // TODO: vpternlog
-            const jsonCharHighNibbleTable: @Vector(chunk.len, u8) = struct {
-                const TABLE = block: {
-                    const tableArray = JSON_CHAR_TABLES.HIGH_NIBBLE_TABLE;
-                    const tableVector: @Vector(tableArray.len, u8) = tableArray;
-                    break :block simd.expandVector(tableVector, chunk.len);
-                };
-            }.TABLE;
+            const jsonCharLowNibbleTable: @Vector(chunk.len, u8) = comptime block: {
+                const tableArray = JSON_CHAR_TABLES.LOW_NIBBLE_TABLE;
+                const tableVector: @Vector(tableArray.len, u8) = tableArray;
+
+                break :block simd.expandVector(tableVector, chunk.len);
+            };
+
+            const jsonCharHighNibbleTable: @Vector(chunk.len, u8) = comptime block: {
+                const tableArray = JSON_CHAR_TABLES.HIGH_NIBBLE_TABLE;
+                const tableVector: @Vector(tableArray.len, u8) = tableArray;
+
+                break :block simd.expandVector(tableVector, chunk.len);
+            };
 
             const eqlToBits, const notEqlToBits = comptime switch (chunk.len) {
                 16 => .{ simd.x86.eqlToBits128, simd.x86.notEqlToBits128 },
@@ -221,65 +235,60 @@ pub fn next(self: *Tokenizer) usize {
                 else => unreachable,
             };
 
-            const anyControlCharsMask: u64, const anyWhitespacesMask: u64 = block: {
-                const lowNibbles = simd.getLowNibbles(chunk);
-                const highNibbles = simd.getHighNibbles(chunk);
+            const anyControlCharsMask: u64, const anyWhitespacesMask: u64 = block: switch (comptime maxVectorLen) {
+                16 => {
+                    const lowNibblesMatch =
+                        simd.shuffleVector128_x64(jsonCharLowNibbleTable, chunkLowNibbles);
+                    const highNibblesMatch =
+                        simd.shuffleVector128_x64(jsonCharHighNibbleTable, chunkHighNibbles);
 
-                switch (comptime maxVectorLen) {
-                    16 => {
-                        const lowNibblesMatch =
-                            simd.shuffleVector128_x64(jsonCharLowNibbleTable, lowNibbles);
-                        const highNibblesMatch =
-                            simd.shuffleVector128_x64(jsonCharHighNibbleTable, highNibbles);
+                    const charsMatch = lowNibblesMatch & highNibblesMatch;
 
-                        const charsMatch = lowNibblesMatch & highNibblesMatch;
+                    break :block .{
+                        notEqlToBits(charsMatch & JSON_CHAR_TABLES.CONTROL_CHARS_FLAG, @splat(0)),
+                        notEqlToBits(charsMatch & JSON_CHAR_TABLES.WHITESPACE_FLAG, @splat(0)),
+                    };
+                },
+                32 => {
+                    const nibblesMatchHalves = simd.x86.shuffleVector256(
+                        jsonCharLowNibbleTable ++ jsonCharHighNibbleTable,
+                        chunkLowNibbles ++ chunkHighNibbles,
+                    );
 
-                        break :block .{
-                            notEqlToBits(charsMatch & JSON_CHAR_TABLES.CONTROL_CHARS_FLAG, @splat(0)),
-                            notEqlToBits(charsMatch & JSON_CHAR_TABLES.WHITESPACE_FLAG, @splat(0)),
-                        };
-                    },
-                    32 => {
-                        const nibblesMatchHalves = simd.x86.shuffleVector256(
-                            jsonCharLowNibbleTable ++ jsonCharHighNibbleTable,
-                            lowNibbles ++ highNibbles,
-                        );
+                    // TODO: avx2 penalty because of 128-bit registers
+                    const firstHalfMatch: @Vector(16, u8) = nibblesMatchHalves[0..16];
+                    const secondHalfMatch: @Vector(16, u8) = nibblesMatchHalves[16..];
 
-                        // TODO: avx2 penalty because of 128-bit registers
-                        const firstHalfMatch: @Vector(16, u8) = nibblesMatchHalves[0..16];
-                        const secondHalfMatch: @Vector(16, u8) = nibblesMatchHalves[16..];
+                    const charsMatch = firstHalfMatch & secondHalfMatch;
 
-                        const charsMatch = firstHalfMatch & secondHalfMatch;
+                    break :block .{
+                        notEqlToBits(charsMatch & JSON_CHAR_TABLES.CONTROL_CHARS_FLAG, @splat(0)),
+                        notEqlToBits(charsMatch & JSON_CHAR_TABLES.WHITESPACE_FLAG, @splat(0)),
+                    };
+                },
+                64 => {
+                    const lowNibblesMatch =
+                        simd.x86.shuffleVector512(jsonCharLowNibbleTable, chunkLowNibbles);
+                    const highNibblesMatch =
+                        simd.x86.shuffleVector512(jsonCharHighNibbleTable, chunkHighNibbles);
 
-                        break :block .{
-                            notEqlToBits(charsMatch & JSON_CHAR_TABLES.CONTROL_CHARS_FLAG, @splat(0)),
-                            notEqlToBits(charsMatch & JSON_CHAR_TABLES.WHITESPACE_FLAG, @splat(0)),
-                        };
-                    },
-                    64 => {
-                        const lowNibblesMatch =
-                            simd.x86.shuffleVector512(jsonCharLowNibbleTable, lowNibbles);
-                        const highNibblesMatch =
-                            simd.x86.shuffleVector512(jsonCharHighNibbleTable, highNibbles);
+                    const charsMatch = lowNibblesMatch & highNibblesMatch;
 
-                        const charsMatch = lowNibblesMatch & highNibblesMatch;
-
-                        break :block .{
-                            simd.x86.andToBits512(
-                                charsMatch,
-                                @splat(JSON_CHAR_TABLES.CONTROL_CHARS_FLAG),
-                            ),
-                            simd.x86.andToBits512(
-                                charsMatch,
-                                @splat(JSON_CHAR_TABLES.WHITESPACE_FLAG),
-                            ),
-                        };
-                    },
-                    else => unreachable,
-                }
+                    break :block .{
+                        simd.x86.andToBits512(
+                            charsMatch,
+                            @splat(JSON_CHAR_TABLES.CONTROL_CHARS_FLAG),
+                        ),
+                        simd.x86.andToBits512(
+                            charsMatch,
+                            @splat(JSON_CHAR_TABLES.WHITESPACE_FLAG),
+                        ),
+                    };
+                },
+                else => unreachable,
             };
 
-            const stringsMask, const stringsMaskContext = block: {
+            const stringsMask, const newStringContext = block: {
                 const anyQuotesMask: u64 = eqlToBits(chunk, @splat('"'));
                 const backslashMask: u64 = eqlToBits(chunk, @splat('\\'));
 
@@ -289,10 +298,11 @@ pub fn next(self: *Tokenizer) usize {
                     self.stringContext,
                 );
 
-                break :block .{ result.stringsMask, result.stringsMaskContext };
+                break :block .{ result.stringsMask, result.newStringContext };
             };
 
-            self.stringContext = stringsMaskContext;
+            self.stringContext = newStringContext;
+            self.ecnodingContext = validateEncodingResult.newEncodingContext;
 
             const jsonCharsMask = getJsonCharsMask(
                 anyControlCharsMask,
@@ -315,6 +325,7 @@ pub fn next(self: *Tokenizer) usize {
             const maxVectorLen = 16;
 
             if (maxVectorLen > source.len) break :simd;
+
             const prevJsonCharsMask = self.prevJsonCharsMask;
             if (prevJsonCharsMask != 0) {
                 const charIndex = utils.countTrailZeros(prevJsonCharsMask);
@@ -354,7 +365,7 @@ pub fn next(self: *Tokenizer) usize {
                 };
             };
 
-            const stringsMask, const stringsMaskContext = block: {
+            const stringsMask, const newStringContext = block: {
                 const anyQuotesMask = simd.aarch64.eqlToBits128(chunk, @splat('"'));
                 const backslashMask = simd.aarch64.eqlToBits128(chunk, @splat('\\'));
 
@@ -363,7 +374,7 @@ pub fn next(self: *Tokenizer) usize {
                     backslashMask,
                     self.stringContext,
                 );
-                break :block .{ result.stringsMask, result.stringsMaskContext };
+                break :block .{ result.stringsMask, result.newStringContext };
             };
 
             const jsonCharsMask = getJsonCharsMask(
@@ -372,7 +383,7 @@ pub fn next(self: *Tokenizer) usize {
                 stringsMask,
             );
 
-            self.stirngContext = stringsMaskContext;
+            self.stringContext = newStringContext;
 
             if (jsonCharsMask != 0) {
                 const charIndex = utils.countTrailZeros(jsonCharsMask);
@@ -383,27 +394,28 @@ pub fn next(self: *Tokenizer) usize {
     }
 }
 
-/// Returns a mask where every bit of control chars and starts of JSON values is set to 1.
+/// Returns a mask where bits of control chars and starts of JSON values are set to 1.
+///
+/// `anyControlCharsMask` and `anyWhitespacesMask` can contain
+/// chars inside strings, which are filtered by this function.
 ///
 /// The result doesn't include ends of JSON values.
 ///
-/// Any opaque sequence of chars that are not control or whitespaces is treated as a JSON value.
+/// Any sequence of chars that are not control or whitespaces is treated as a JSON value.
 ///
 /// That is, for `"abc"123`, `10000000` is returned, 'cause it is treated as a single value.
 ///
 /// The same is for `truefalse123"string"`, `nullfalse` and the like.
 ///
-/// `anyControlCharsMask` and `anyWhitespacesMask` can contain
-/// chars inside strings, which are filtered by this function.
 inline fn getJsonCharsMask(anyControlCharsMask: u64, anyWhitespacesMask: u64, stringsMask: u64) u64 {
     // { "\\\"Nam[{": [ 116,"\\\\" , 234, "true", false ], "t":"\\\"" }
     // __1111111111_________11111_________11111____________11__11111___ S
     // 1____________1_1____1_______1____1_______1_______11____1_______1 C = anyC & ~S
     // _1____________1_1__________1_1____1_______1_____1__1__________1_ W = anyW & ~S
     // 11___________1111___1______111___11______11_____1111___1______11 CW = C | W
-    // _11___________1111___1______111___11______11_____1111___1______1 CV = CW << 1
+    // _11___________1111___1______111___11______11_____1111___1______1 RES = CW << 1
     // 1_111111111111_1_1111111111_1_1111_1111111_11111_11_1111111111_1 W = ~W
-    // __1____________1_1___1______1_1____1_______1_____11_1___1______1 CV &= W
+    // __1____________1_1___1______1_1____1_______1_____11_1___1______1 RES &= W
     const controlAndSpacesMask = (anyControlCharsMask | anyWhitespacesMask) & ~stringsMask;
 
     return (controlAndSpacesMask << 1) & ~anyWhitespacesMask;
@@ -416,7 +428,7 @@ inline fn getStringsMask(
     anyQuotesMask: u64,
     backslashMask: u64,
     stringContext: StringContext,
-) struct { stringsMask: u64, stringsMaskContext: StringContext } {
+) struct { stringsMask: u64, newStringContext: StringContext } {
     const escapedCharsMask, const isStringEndedWithEscaping = block: {
         const result = getEscapedCharsMask(
             backslashMask,
@@ -438,7 +450,7 @@ inline fn getStringsMask(
 
     return .{
         .stringsMask = actualStringsMask,
-        .stringsMaskContext = .{
+        .newStringContext = .{
             .isStringOpened = isStringsMaskOpened(actualStringsMask),
             .isStringEndedWithEscaping = isStringEndedWithEscaping,
         },
@@ -462,10 +474,10 @@ inline fn isStringsMaskOpened(stringsMask: u64) u64 {
 /// - `escapedCharsMask` is a mask where 1 is only at bit indexes of chars, escaped inside strings.
 /// - `isStringEndedWithEscaping` is the same as `Tokenizer.isStringEndedWithEscaping`, but for the current chunk.
 ///
-/// Ignores even backslash sequences (when a backslash escapes another backslash).
-/// That is, if JSON input is `"\\key": "\\\\"`, this function
-/// understands that nothing significant but only backslashes are escaped,
-/// and returns `0`.
+/// Ignores sequences with an even amount of backslashes (backslash escapes another backslash).
+/// That is, if JSON input is `"\\key": "\\\\"`,
+/// this function understands that nothing significant
+/// but only backslashes are escaped, and the returned mask is 0.
 inline fn getEscapedCharsMask(
     backslashMask: u64,
     isPrevStringEndedWithEscaping: @FieldType(StringContext, "isStringEndedWithEscaping"),
@@ -483,7 +495,6 @@ inline fn getEscapedCharsMask(
     // and if the prev string ends with escaping (isPrevStringEndedWithEscaping),
     // do `backsMask ^ 1` to flip the first bit (that is, to escape the first char).
     // Otherwise, do `backsMask ^ 0` and get unchanged `backsMask`.
-
     const actualBackslashMask =
         backslashMask ^ ((backslashStarts & 1) * isPrevStringEndedWithEscaping);
 
@@ -530,8 +541,7 @@ inline fn getEscapedCharsMask(
     };
 }
 
-/// `actualBackslashMask` must be already actualized via
-/// handling `Tokenizer.isStringEndedWithEscaping`.
+/// `actualBackslashMask` must take in account `StringContext.isStringEndedWithEscaping`.
 ///
 /// Returns 1 when `backslashMask` ends with a backslash
 /// which escapes a char of the next SIMD-chunk.

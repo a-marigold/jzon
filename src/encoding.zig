@@ -208,7 +208,7 @@ pub const x86 = struct {
 
         const invalidBytes, const doubleContinuationStarts = block: {
             const doubleContinuationMask = UTF8_INVALID_CHAR_TABLES.DOUBLE_CONTINUATION_FLAG;
-            const errorMask = comptime ~doubleContinuationMask;
+            const invalidBytesMask = comptime ~doubleContinuationMask;
 
             switch (comptime maxVectorLen) {
                 16 => {
@@ -228,7 +228,7 @@ pub const x86 = struct {
                     const bytesMatch =
                         leadByteLowNibbleErrors & leadByteHighNibbleErrors & nextByteHighNibbleErrors;
 
-                    break :block .{ bytesMatch & errorMask, bytesMatch & doubleContinuationMask };
+                    break :block .{ bytesMatch & invalidBytesMask, bytesMatch & doubleContinuationMask };
                 },
                 32 => {
                     // TODO
@@ -245,7 +245,7 @@ pub const x86 = struct {
                     const bytesMatch =
                         leadByteHalves & nextByteHighNibbleErrors & leadByteHalves[16..];
 
-                    break :block .{ bytesMatch & errorMask, bytesMatch & doubleContinuationMask };
+                    break :block .{ bytesMatch & invalidBytesMask, bytesMatch & doubleContinuationMask };
                 },
                 64 => {
                     const leadByteLowNibbleErrors = simd.x86.shuffleVector512(
@@ -267,7 +267,7 @@ pub const x86 = struct {
                         nextByteHighNibbleErrors,
                     );
 
-                    break :block .{ bytesMatch & errorMask, bytesMatch & doubleContinuationMask };
+                    break :block .{ bytesMatch & invalidBytesMask, bytesMatch & doubleContinuationMask };
                 },
                 else => unreachable,
             }
