@@ -12,11 +12,7 @@ const builtin = @import("builtin");
 const CPU = builtin.cpu;
 
 pub const x86 = struct {
-    const _MM_CMPINT_EQ: u8 = 0x00;
-    const _MM_CMPINT_NE: u8 = 0x04;
-    const _MM_CMPINT_GT: u8 = 0x06;
     const VPTERNLOG_AND_OPERATION = 0x80;
-
     // TODO: check avx2 penalty because of 128-bit registers in every `util128`
 
     /// Returns 16, 32, 64 or `null` in case of lack of SIMD.
@@ -169,12 +165,18 @@ pub const x86 = struct {
         return c;
     }
 
-    pub inline fn isZero512(vector: @Vector(64, u8)) bool {
+    /// Returns `true` if every element of `vector` is zero.
+    ///
+    /// `T` is either `u8` or `bool`.
+    pub inline fn isZero512(comptime T: type, vector: @Vector(64, T)) bool {
         // TODO: compiler explorer
         return @reduce(.Or, vector) == 0;
     }
 
-    pub inline fn isNonZero512(vector: @Vector(64, u8)) bool {
+    /// Returns `true` if at least one element of `vector` isn't zero.
+    ///
+    /// `T` is either `u8` or `bool`.
+    pub inline fn isNonZero512(comptime T: type, vector: @Vector(64, T)) bool {
         // TODO: compiler explorer
         return @reduce(.Or, vector) != 0;
     }
