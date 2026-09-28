@@ -4,8 +4,10 @@ const simd = @import("simd.zig");
 const Tokenizer = @import("Tokenizer.zig");
 
 /// Contains `LEAD_BYTE_LOW_NIBBLE_TABLE`, `LEAD_BYTE_HIGH_NIBBLE_TABLE`,
-/// `NEXT_BYTE_HIGH_NIBBLE_TABLE` lookup tables to be used as vectors
-/// and `DOUBLE_CONTINUATION_FLAG`.
+/// `NEXT_BYTE_HIGH_NIBBLE_TABLE` lookup tables to be used as vectors.
+///
+/// `DOUBLE_CONTINUATION_FLAG` is the flag, which is set
+/// at indexes of the tables meaning two continuation bytes in a row (double continuation).
 ///
 /// Indexes of tables are low, high nibbles of the first (lead) byte of a sequence,
 /// and high nibbles of the second (next or continuation) byte of a sequence.
@@ -18,7 +20,7 @@ const Tokenizer = @import("Tokenizer.zig");
 /// All values of this table that are `DOUBLE_CONTINUATION_FLAG` are not errors.
 /// They mean two continuation bytes in a row and
 /// used for validating 3-, 4- byte sequences.
-const UTF8_INVALID_CHAR_TABLES = block: {
+const UTF8_TWO_BYTE_TABLES = block: {
     var leadByteLowNibbles: [16]u8 = @splat(0);
     var leadByteHighNibbles: [16]u8 = @splat(0);
     var nextByteHighNibbles: [16]u8 = @splat(0);
@@ -161,22 +163,22 @@ pub const x86 = struct {
         /// Also, high nibbles are computed in `Tokenizer.next` in any way.
         /// So, receive it as an argument not to compute it twice.
         chunkHighNibbles: @TypeOf(chunk),
-        prevEncodingContext: Tokenizer.EncodingContext,
+        encodingContext: Tokenizer.EncodingContext,
         comptime maxVectorLen: comptime_int,
-    ) struct { isValid: bool, encodingContext: Tokenizer.EncodingContext } {
+    ) struct { isValid: bool, newEncodingContext: Tokenizer.EncodingContext } {
         const mergeShiftRight = comptime switch (maxVectorLen) {
             16, 32 => simd.x86.mergeShiftRight128,
             64 => simd.x86.mergeShiftRight512,
             else => unreachable,
         };
 
-        const chunkWithPrev = mergeShiftRight(prevEncodingContext.prevChunk, chunk, 1);
+        const chunkWithPrev = mergeShiftRight(encodingContext.prevChunk, chunk, 1);
 
         // Fast path
         if (isVectorNonAscii(chunkWithPrev))
             return .{
                 .isValid = true,
-                .encodingContext = .{
+                .newEncodingContext = .{
                     .prevChunk = chunkWithPrev,
                     .prevThreeByteLeads = @splat(0),
                     .prevFourByteLeads = @splat(0),
@@ -184,20 +186,20 @@ pub const x86 = struct {
             };
 
         const leadByteLowNibbleTable = comptime block: {
-            const tableArray = UTF8_INVALID_CHAR_TABLES.LEAD_BYTE_LOW_NIBBLE_TABLE;
+            const tableArray = UTF8_TWO_BYTE_TABLES.LEAD_BYTE_LOW_NIBBLE_TABLE;
             const tableVector: @Vector(tableArray.len, u8) = tableArray;
 
             break :block simd.expandVector(tableVector, chunk.len);
         };
         const leadByteHighNibbleTable = comptime block: {
-            const tableArray = UTF8_INVALID_CHAR_TABLES.LEAD_BYTE_HIGH_NIBBLE_TABLE;
+            const tableArray = UTF8_TWO_BYTE_TABLES.LEAD_BYTE_HIGH_NIBBLE_TABLE;
             const tableVector: @Vector(tableArray.len, u8) = tableArray;
 
             break :block simd.expandVector(tableVector, chunk.len);
         };
 
         const nextByteHighNibbleTable = comptime block: {
-            const tableArray = UTF8_INVALID_CHAR_TABLES.NEXT_BYTE_HIGH_NIBBLE_TABLE;
+            const tableArray = UTF8_TWO_BYTE_TABLES.NEXT_BYTE_HIGH_NIBBLE_TABLE;
             const tableVector: @Vector(tableArray.len, u8) = tableArray;
 
             break :block simd.expandVector(tableVector, chunk.len);
@@ -207,7 +209,7 @@ pub const x86 = struct {
         const chunkWithPrevHighNibbles = simd.getHighNibbles(chunkWithPrev);
 
         const invalidBytes, const doubleContinuationStarts = block: {
-            const doubleContinuationMask = UTF8_INVALID_CHAR_TABLES.DOUBLE_CONTINUATION_FLAG;
+            const doubleContinuationMask = UTF8_TWO_BYTE_TABLES.DOUBLE_CONTINUATION_FLAG;
             const invalidBytesMask = comptime ~doubleContinuationMask;
 
             switch (comptime maxVectorLen) {
@@ -275,14 +277,14 @@ pub const x86 = struct {
 
         const isTwoByteError = switch (comptime maxVectorLen) {
             16, 32 => simd.x86.eqlToBits128(invalidBytes, @splat(0)) != 0,
-            64 => simd.x86.isNonZero512(invalidBytes),
+            64 => simd.x86.isNonZero512(bool, invalidBytes),
             else => unreachable,
         };
 
         if (isTwoByteError)
             return .{
                 .isValid = false,
-                .encodingContext = .{
+                .newEncodingContext = .{
                     .prevChunk = chunkWithPrev,
                     .prevThreeByteLeads = @splat(0),
                     .prevFourByteLeads = @splat(0),
@@ -301,19 +303,25 @@ pub const x86 = struct {
         );
 
         const expectedDoubleContinuationStarts = block: {
+            // Do merge shift, not default shift, to handle
+            // cases when a 3-byte leader is the last byte of the prev chunk
             const expectedThreeByteContinuationStarts = mergeShiftRight(
-                prevEncodingContext.prevThreeByteLeads,
+                encodingContext.prevThreeByteLeads,
                 threeByteLeads,
                 1,
             );
 
+            // Do merge shift by 1, not default shift, to handle
+            // cases when a 4-byte leader is the last byte of the prev chunk.
+            // And do merge shift by 2 to handle cases
+            // when a 4-byte leader is the penultimate byte of the prev chunk
             const expectedFourByteContinuationStarts =
                 mergeShiftRight(
-                    prevEncodingContext.prevFourByteLeads,
+                    encodingContext.prevFourByteLeads,
                     fourByteLeads,
                     1,
                 ) | mergeShiftRight(
-                    prevEncodingContext.prevFourByteLeads,
+                    encodingContext.prevFourByteLeads,
                     fourByteLeads,
                     2,
                 );
@@ -321,17 +329,16 @@ pub const x86 = struct {
             break :block expectedThreeByteContinuationStarts & expectedFourByteContinuationStarts;
         };
 
-        // TODO: issue
         const isDoubleContinuationError = switch (comptime maxVectorLen) {
             16, 32 => simd.x86.eqlToBits128(doubleContinuationStarts, expectedDoubleContinuationStarts) == 0,
-            64 => simd.x86.isZero512(doubleContinuationStarts == expectedDoubleContinuationStarts),
+            64 => simd.x86.isZero512(bool, doubleContinuationStarts == expectedDoubleContinuationStarts),
             else => unreachable,
         };
 
         if (isDoubleContinuationError)
             return .{
                 .isValid = false,
-                .encodingContext = .{
+                .newEncodingContext = .{
                     .prevChunk = chunkWithPrev,
                     .prevThreeByteLeads = @splat(0),
                     .prevFourByteLeads = @splat(0),
@@ -340,7 +347,7 @@ pub const x86 = struct {
 
         return .{
             .isValid = true,
-            .encodingContext = .{
+            .newEncodingContext = .{
                 .prevChunk = chunkWithPrev,
                 .prevThreeByteLeads = threeByteLeads,
                 .prevFourByteLeads = fourByteLeads,
@@ -348,6 +355,8 @@ pub const x86 = struct {
         };
     }
 
+    /// Three 3-byte leaders in the returned vector have
+    /// `UTF8_INVALID_BYTE_TABLES.DOUBLE_CONTINUATION_FLAG` as values.
     inline fn getThreeByteLeads(
         chunkLowNibbles: anytype,
         chunkHighNibbles: @TypeOf(chunkLowNibbles),
@@ -355,20 +364,26 @@ pub const x86 = struct {
     ) @TypeOf(chunkLowNibbles) {
         const chunkLen = chunkLowNibbles.len;
 
+        // `validateEncoding` compares vector of 3-byte leads with
+        // vector of double continuation bytes bit-to-bit,
+        // so 3-byte leads must have the same bits
+        const doubleContinuationFlagVector: @Vector(chunkLen, u8) =
+            @splat(UTF8_TWO_BYTE_TABLES.DOUBLE_CONTINUATION_FLAG);
+
         const threeByteLeadLowNibbleTable = comptime block: {
             const tableArray = UTF8_THREE_BYTE_LEAD_TABLES.LOW_NIBBLE_TABLE;
             const tableVector: @Vector(tableArray.len, u8) = tableArray;
 
-            break :block simd.expandVector(tableVector, chunkLen);
+            break :block simd.expandVector(tableVector, chunkLen) & doubleContinuationFlagVector;
         };
         const threeByteLeadHighNibbleTable = comptime block: {
             const tableArray = UTF8_THREE_BYTE_LEAD_TABLES.HIGH_NIBBLE_TABLE;
             const tableVector: @Vector(tableArray.len, u8) = tableArray;
 
-            break :block simd.expandVector(tableVector, chunkLen);
+            break :block simd.expandVector(tableVector, chunkLen) & doubleContinuationFlagVector;
         };
 
-        switch (maxVectorLen) {
+        switch (comptime maxVectorLen) {
             16 => {
                 const lowNibblesMatch =
                     simd.x86.shuffleVector128(threeByteLeadLowNibbleTable, chunkLowNibbles);
@@ -395,6 +410,8 @@ pub const x86 = struct {
             },
         }
     }
+    /// Three 4-byte leaders in the returned vector have
+    /// `UTF8_INVALID_BYTE_TABLES.DOUBLE_CONTINUATION_FLAG` as values.
     inline fn getFourByteLeads(
         chunkLowNibbles: anytype,
         chunkHighNibbles: @TypeOf(chunkLowNibbles),
@@ -402,20 +419,26 @@ pub const x86 = struct {
     ) @TypeOf(chunkLowNibbles) {
         const chunkLen = chunkLowNibbles.len;
 
+        // `validateEncoding` compares vector of 4-byte leads with
+        // vector of double continuation bytes bit-to-bit,
+        // so 4-byte leads must have the same bits
+        const doubleContinuationFlagVector: @Vector(chunkLen, u8) =
+            @splat(UTF8_TWO_BYTE_TABLES.DOUBLE_CONTINUATION_FLAG);
+
         const fourByteLeadLowNibbleTable = comptime block: {
             const tableArray = UTF8_FOUR_BYTE_LEAD_TABLES.LOW_NIBBLE_TABLE;
             const tableVector: @Vector(tableArray.len, u8) = tableArray;
 
-            break :block simd.expandVector(tableVector, chunkLen);
+            break :block simd.expandVector(tableVector, chunkLen) & doubleContinuationFlagVector;
         };
         const fourByteLeadHighNibbleTable = comptime block: {
             const tableArray = UTF8_FOUR_BYTE_LEAD_TABLES.HIGH_NIBBLE_TABLE;
             const tableVector: @Vector(tableArray.len, u8) = tableArray;
 
-            break :block simd.expandVector(tableVector, chunkLen);
+            break :block simd.expandVector(tableVector, chunkLen) & doubleContinuationFlagVector;
         };
 
-        switch (maxVectorLen) {
+        switch (comptime maxVectorLen) {
             16 => {
                 const lowNibblesMatch =
                     simd.x86.shuffleVector128(fourByteLeadLowNibbleTable, chunkLowNibbles);
