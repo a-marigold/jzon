@@ -2,6 +2,8 @@
 
 // TODO: intel syntax x64
 // TODO: 16, 64 byte order
+// TODO: use all 32 bytes on avx2
+// TODO: 'variable' to 'scalable'
 
 const std = @import("std");
 const Target = std.Target;
@@ -14,8 +16,6 @@ pub const x86 = struct {
     const _MM_CMPINT_NE: u8 = 0x04;
     const _MM_CMPINT_GT: u8 = 0x06;
     const VPTERNLOG_AND_OPERATION = 0x80;
-
-    // TODO: fix 128-bit asm returning
 
     // TODO: check avx2 penalty because of 128-bit registers in every `util128`
 
@@ -99,13 +99,17 @@ pub const x86 = struct {
     /// Compares each element of the two vectors producing a mask,
     /// where bit is set to 1 if the elements equal.
     pub inline fn eqlToBits128(a: @Vector(16, u8), b: @Vector(16, u8)) u64 {
-        return vectorToBits128(bool, a == b);
+        asm ("pcmpeqb %[a], %[b]"
+            : [b] "=v" (b),
+            : [a] "v" (a),
+        );
+        return vectorToBits128(b);
     }
 
     /// Compares each element of the two vectors producing a mask,
     /// where bit is set to 1 if the elements don't equal.
     pub inline fn notEqlToBits128(a: @Vector(16, u8), b: @Vector(16, u8)) u64 {
-        return vectorToBits128(bool, a != b);
+        return ~eqlToBits128(a, b);
     }
 
     /// Compares each element of the two vectors producing a mask,
@@ -156,7 +160,6 @@ pub const x86 = struct {
         b: @Vector(64, u8),
         c: @Vector(64, u8),
     ) @Vector(64, u8) {
-        // TODO: mask
         asm ("vpternlogd %[operation], %[a], %[b], %[c]"
             : [c] "+&v" (c),
             : [a] "v" (a),
@@ -168,13 +171,11 @@ pub const x86 = struct {
 
     pub inline fn isZero512(vector: @Vector(64, u8)) bool {
         // TODO: compiler explorer
-
         return @reduce(.Or, vector) == 0;
     }
 
     pub inline fn isNonZero512(vector: @Vector(64, u8)) bool {
         // TODO: compiler explorer
-
         return @reduce(.Or, vector) != 0;
     }
 
@@ -245,7 +246,7 @@ pub const x86 = struct {
     ///
     /// Returns a bit mask, where 1 is at indexes,
     /// at which `vector` has bytes with high-bit 1.
-    inline fn vectorToBits128(comptime T: type, vector: @Vector(16, T)) u32 {
+    inline fn vectorToBits128(vector: @Vector(16, u8)) u32 {
         // TODO: check avx2 penalty because of 128-bit registers
         return asm ("pmovmskb %[vector], %[result]"
             : [result] "=r" (-> u64),
@@ -316,12 +317,16 @@ pub const aarch64 = struct {
     pub inline fn notEqlToBits128(a: @Vector(16, u8), b: @Vector(16, u8)) u64 {
         return vectorToBits128(a != b);
     }
+
     /// Example:
     ///
     /// `vector = .{ 0, 1, 2, 3 }`.
     ///
     /// The result is `.{ 0, 0, 1, 2 }`.
-    pub inline fn shiftRight128(vector: @Vector(16, u8), comptime shiftBytesAmount: u8) @Vector(16, u8) {
+    pub inline fn shiftRight128(
+        vector: @Vector(16, u8),
+        comptime shiftBytesAmount: u8,
+    ) @Vector(16, u8) {
         return mergeShiftRight128(@splat(0), vector, shiftBytesAmount);
     }
 
