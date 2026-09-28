@@ -3,6 +3,8 @@ const utils = @import("utils.zig");
 const simd = @import("simd.zig");
 const Tokenizer = @import("Tokenizer.zig");
 
+const EncodingContext = Tokenizer.EncodingContext;
+
 /// Contains `LEAD_BYTE_LOW_NIBBLE_TABLE`, `LEAD_BYTE_HIGH_NIBBLE_TABLE`,
 /// `NEXT_BYTE_HIGH_NIBBLE_TABLE` lookup tables to be used as vectors.
 ///
@@ -149,6 +151,11 @@ const UTF8_FOUR_BYTE_LEAD_TABLES = block: {
     };
 };
 
+pub const ValidateEncodingResult = struct {
+    isValid: bool,
+    newEncodingContext: EncodingContext,
+};
+
 pub const x86 = struct {
     /// Returns `true` only if `chunk` of JSON chars has valid UTF-8.
     ///
@@ -163,9 +170,9 @@ pub const x86 = struct {
         /// Also, high nibbles are computed in `Tokenizer.next` in any way.
         /// So, receive it as an argument not to compute it twice.
         chunkHighNibbles: @TypeOf(chunk),
-        encodingContext: Tokenizer.EncodingContext,
+        encodingContext: EncodingContext,
         comptime maxVectorLen: comptime_int,
-    ) struct { isValid: bool, newEncodingContext: Tokenizer.EncodingContext } {
+    ) ValidateEncodingResult {
         const mergeShiftRight = comptime switch (maxVectorLen) {
             16, 32 => simd.x86.mergeShiftRight128,
             64 => simd.x86.mergeShiftRight512,
