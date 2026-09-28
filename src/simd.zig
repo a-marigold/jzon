@@ -169,15 +169,12 @@ pub const x86 = struct {
     ///
     /// `T` is either `u8` or `bool`.
     pub inline fn isZero512(comptime T: type, vector: @Vector(64, T)) bool {
-        // TODO: compiler explorer
         return @reduce(.Or, vector) == 0;
     }
-
     /// Returns `true` if at least one element of `vector` isn't zero.
     ///
     /// `T` is either `u8` or `bool`.
     pub inline fn isNonZero512(comptime T: type, vector: @Vector(64, T)) bool {
-        // TODO: compiler explorer
         return @reduce(.Or, vector) != 0;
     }
 
@@ -311,13 +308,18 @@ pub const aarch64 = struct {
     /// Compares each element of the two vectors producing a mask,
     /// where bit is set to 1 if the elements equal.
     pub inline fn eqlToBits128(a: @Vector(16, u8), b: @Vector(16, u8)) u64 {
-        return vectorToBits128(a == b);
+        const comparedVector = asm ("cmeq %[result].16b, %[a].16b, %[b].16b"
+            : [result] "=w" (-> @Vector(16, u8)),
+            : [a] "w" (a),
+              [b] "w" (b),
+        );
+        return vectorToBits128(comparedVector);
     }
 
     /// Compares each element of the two vectors producing a mask,
     /// where bit is set to 1 if the elements equal.
     pub inline fn notEqlToBits128(a: @Vector(16, u8), b: @Vector(16, u8)) u64 {
-        return vectorToBits128(a != b);
+        return ~eqlToBits128(a, b);
     }
 
     /// Example:
@@ -408,10 +410,11 @@ pub inline fn mulCarryless(a: u64, b: u64) u64 {
             const aVector: @Vector(2, u64) = .{ a, 0 };
             var bVector: @Vector(2, u64) = .{ b, 0 };
 
-            asm volatile ("pclmulqdq $0x00, %[a], %[b]" // `$0x00` means low bits of vectors are multiplied
-                : [b] "+x" (bVector),
-                : [a] "x" (aVector),
+            asm ("pclmulqdq $0x00, %[a], %[b]" // `$0x00` means low bits of vectors are multiplied
+                : [b] "+v" (bVector),
+                : [a] "v" (aVector),
             );
+
             return bVector[0];
         },
 
