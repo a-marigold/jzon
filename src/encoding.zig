@@ -473,7 +473,7 @@ pub const x86 = struct {
         }
     }
 
-    /// Returns `true` when `vector` with JSON chars contains not only the ASCII-chars.
+    /// Returns `true` when `vector` with JSON chars contains not only the ASCII chars
     ///
     /// Otherwise, returns `false`.
     pub inline fn isVectorNonAscii(vector: anytype) bool {
@@ -481,10 +481,18 @@ pub const x86 = struct {
         const onlyHighBitsVector: @TypeOf(vector) = @splat(0b10000000);
 
         return switch (comptime vector.len) {
-            64 => simd.x86.andToBits512(vector, onlyHighBitsVector) != 0,
-
-            else => unreachable,
             16 => simd.x86.notEqlToBits128(vector & onlyHighBitsVector, 0) != 0,
+            64 => simd.x86.andToBits512(vector, onlyHighBitsVector) != 0,
+            else => unreachable,
         };
+    }
+};
+
+pub const aarch64 = struct {
+    /// Returns `true` when `vector` with JSON chars contains not only the ASCII chars.
+    pub inline fn isVectorNonAscii128(vector: @Vector(16, u8)) bool {
+        const onlyHighBitsVector: @Vector(16, u8) = @splat(0b10000000);
+
+        return simd.aarch64.notEqlToBits128(vector & onlyHighBitsVector, 0) != 0;
     }
 };
