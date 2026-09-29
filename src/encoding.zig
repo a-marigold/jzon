@@ -95,7 +95,6 @@ const UTF8_TWO_BYTE_TABLES = block: {
 
         leadByteLowNibbles[lowNibble] = doubleContinuationFlag;
         leadByteHighNibbles[highNibble] = doubleContinuationFlag;
-
         nextByteHighNibbles[highNibble] = doubleContinuationFlag;
     }
 
@@ -182,7 +181,7 @@ pub const x86 = struct {
         const chunkWithPrev = mergeShiftRight(encodingContext.prevChunk, chunk, 1);
 
         // Fast path
-        if (isVectorNonAscii(chunkWithPrev))
+        if (isVectorAscii(chunkWithPrev))
             return .{
                 .isValid = true,
                 .newEncodingContext = .{
@@ -204,7 +203,6 @@ pub const x86 = struct {
 
             break :block simd.expandVector(tableVector, chunk.len);
         };
-
         const nextByteHighNibbleTable = comptime block: {
             const tableArray = UTF8_TWO_BYTE_TABLES.NEXT_BYTE_HIGH_NIBBLE_TABLE;
             const tableVector: @Vector(tableArray.len, u8) = tableArray;
@@ -473,16 +471,16 @@ pub const x86 = struct {
         }
     }
 
-    /// Returns `true` when `vector` with JSON chars contains not only the ASCII chars
-    ///
-    /// Otherwise, returns `false`.
-    pub inline fn isVectorNonAscii(vector: anytype) bool {
-        // All ASCII chars have the highest bit set to 0
-        const onlyHighBitsVector: @TypeOf(vector) = @splat(0b10000000);
+    /// Returns `true` when `vector` with JSON chars contains ONLY the ASCII chars
+    pub inline fn isVectorAscii(vector: anytype) bool {
+        // All ASCII chars have the highest bit set to 0,
+        // so bytes that are zero in `vector`
+        // after AND with this mask are ASCII chars
+        const nonAsciiCharMasks: @TypeOf(vector) = @splat(0b10000000);
 
         return switch (comptime vector.len) {
-            16 => simd.x86.notEqlToBits128(vector & onlyHighBitsVector, 0) != 0,
-            64 => simd.x86.andToBits512(vector, onlyHighBitsVector) != 0,
+            16 => simd.x86.eqlToBits128(vector & nonAsciiCharMasks, nonAsciiCharMasks) == 0,
+            64 => simd.x86.andToBits512(vector, nonAsciiCharMasks) == 0,
             else => unreachable,
         };
     }
@@ -490,9 +488,12 @@ pub const x86 = struct {
 
 pub const aarch64 = struct {
     /// Returns `true` when `vector` with JSON chars contains not only the ASCII chars.
-    pub inline fn isVectorNonAscii128(vector: @Vector(16, u8)) bool {
-        const onlyHighBitsVector: @Vector(16, u8) = @splat(0b10000000);
+    pub inline fn isVectorAscii128(vector: @Vector(16, u8)) bool {
+        // All ASCII chars have the highest bit set to 0,
+        // so bytes that are zero in `vector`
+        // after AND with this mask are ASCII chars
+        const nonAsciiCharMasks: @Vector(16, u8) = @splat(0b10000000);
 
-        return simd.aarch64.notEqlToBits128(vector & onlyHighBitsVector, 0) != 0;
+        return simd.aarch64.eqlToBits128(vector & nonAsciiCharMasks, nonAsciiCharMasks) == 0;
     }
 };
