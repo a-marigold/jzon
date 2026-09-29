@@ -1,11 +1,10 @@
 //! SIMD utils.
 
-// TODO: intel syntax x64
 // TODO: 16, 64 byte order
 // TODO: use all 32 bytes on avx2
 
 // TODO: maybe instisics
-// TODO: 'shuffleVector' to 'shuffle'
+// TODO: 'shuffle' to 'shuffle'
 
 const std = @import("std");
 const Target = std.Target;
@@ -49,7 +48,7 @@ pub const x86 = struct {
     /// 3. ...
     ///
     /// Returns the resulting vector.
-    pub inline fn shuffleVector128(
+    pub inline fn shuffle128(
         vector: @Vector(16, u8),
         mask: @Vector(16, u8),
     ) @TypeOf(vector) {
@@ -59,16 +58,15 @@ pub const x86 = struct {
         );
     }
 
-    /// `mask` doesn't index all the 256-bit `vector`.
-    /// Instead, 0..16 elements of `mask` index 0..16 elements of `vector`,
+    /// 0..16 elements of `mask` index 0..16 elements of `vector`,
     /// and 16..32 elements of mask index 16..32 elements of `vector`.
     ///
-    /// That is, it is like a parallel `shuffleVector128_x64` for two masks and vectors.
+    /// That is, it is like a parallel `shuffle128` for two masks and vectors.
     ///
     /// Returns the resulting vector.
     ///
     /// Split the result in halves of 128-bits to get the two results.
-    pub inline fn shuffleVector256(
+    pub inline fn shuffle256(
         vector: @Vector(32, u8),
         mask: @Vector(32, u8),
     ) @TypeOf(vector) {
@@ -79,11 +77,11 @@ pub const x86 = struct {
         );
     }
 
-    /// Like `shuffleVector128`, but uses 0..6 bits of `mask` elements,
+    /// Like `shuffle128`, but uses 0..6 bits of `mask` elements,
     /// allowing indexing the whole 512-bit vector.
     ///
     /// Returns the resulting vector.
-    pub inline fn shuffleVector512(
+    pub inline fn shuffle512(
         vector: @Vector(64, u8),
         mask: @Vector(64, u8),
     ) @TypeOf(vector) {
@@ -286,7 +284,7 @@ pub const aarch64 = struct {
     /// 3. ...
     ///
     /// Returns the resulting vector.
-    pub inline fn shuffleVector128(
+    pub inline fn shuffle128(
         vector: @Vector(16, u8),
         mask: @Vector(16, u8),
     ) @Vector(16, u8) {

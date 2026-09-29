@@ -50,7 +50,7 @@ const CPU = builtin.cpu;
 /// - E.g, char `{` is 0x7B (decimal 123), and its low and high
 /// nibbles perfectly fit 0xB and 0x7 appropriatly.
 ///
-/// Used as a lookup-table vector, from which the vector-shuffle intruction
+/// Used as a lookup-table vector, from which the vector shuffle intruction
 /// builds a new vector for searching control characters (see `next` function).
 const JSON_CHAR_TABLES = block: {
     var lowNibbleTable: [16]u8 = @splat(0);
@@ -202,12 +202,13 @@ pub fn next(self: *Tokenizer) usize {
 
             // AVX2 (maxVectorLen == 32) has a specific shuffle vector instruction
             // which uses not all 32 but only 16 bytes of a SIMD chunk
-            const shuffleVectorLen = if (maxVectorLen == 32) 16 else maxVectorLen;
+            const shuffleLen = if (maxVectorLen == 32) 16 else maxVectorLen;
 
-            const chunk: @Vector(shuffleVectorLen, u8) = source[0..shuffleVectorLen].*;
+            const chunk: @Vector(shuffleLen, u8) = source[0..shuffleLen].*;
 
             if (chunk.len > source.len) break :simd;
 
+            // TODO: low nibbles are not always needed
             const chunkLowNibbles = simd.getLowNibbles(chunk);
             const chunkHighNibbles = simd.getHighNibbles(chunk);
 
@@ -244,9 +245,9 @@ pub fn next(self: *Tokenizer) usize {
             const anyControlCharsMask: u64, const anyWhitespacesMask: u64 = block: switch (comptime maxVectorLen) {
                 16 => {
                     const lowNibblesMatch =
-                        simd.x86.shuffleVector128(jsonCharLowNibbleTable, chunkLowNibbles);
+                        simd.x86.shuffle128(jsonCharLowNibbleTable, chunkLowNibbles);
                     const highNibblesMatch =
-                        simd.x86.shuffleVector128(jsonCharHighNibbleTable, chunkHighNibbles);
+                        simd.x86.shuffle128(jsonCharHighNibbleTable, chunkHighNibbles);
 
                     const charsMatch = lowNibblesMatch & highNibblesMatch;
 
@@ -256,7 +257,7 @@ pub fn next(self: *Tokenizer) usize {
                     };
                 },
                 32 => {
-                    const nibblesMatchHalves = simd.x86.shuffleVector256(
+                    const nibblesMatchHalves = simd.x86.shuffle256(
                         jsonCharLowNibbleTable ++ jsonCharHighNibbleTable,
                         chunkLowNibbles ++ chunkHighNibbles,
                     );
@@ -274,9 +275,9 @@ pub fn next(self: *Tokenizer) usize {
                 },
                 64 => {
                     const lowNibblesMatch =
-                        simd.x86.shuffleVector512(jsonCharLowNibbleTable, chunkLowNibbles);
+                        simd.x86.shuffle512(jsonCharLowNibbleTable, chunkLowNibbles);
                     const highNibblesMatch =
-                        simd.x86.shuffleVector512(jsonCharHighNibbleTable, chunkHighNibbles);
+                        simd.x86.shuffle512(jsonCharHighNibbleTable, chunkHighNibbles);
 
                     const charsMatch = lowNibblesMatch & highNibblesMatch;
 
@@ -352,11 +353,11 @@ pub fn next(self: *Tokenizer) usize {
                     const lowNibbles = simd.getLowNibbles(chunk);
                     const highNibbles = simd.getLowNibbles(chunk);
 
-                    const lowNibblesMatch = simd.aarch64.shuffleVector128(
+                    const lowNibblesMatch = simd.aarch64.shuffle128(
                         lowNibbles,
                         jsonCharLowNibbleTable,
                     );
-                    const highNibblesMatch = simd.aarch64.shuffleVector128(
+                    const highNibblesMatch = simd.aarch64.shuffle128(
                         highNibbles,
                         jsonCharHighNibbleTable,
                     );

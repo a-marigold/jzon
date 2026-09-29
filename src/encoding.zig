@@ -220,15 +220,15 @@ pub const x86 = struct {
 
             switch (comptime maxVectorLen) {
                 16 => {
-                    const leadByteLowNibbleErrors = simd.x86.shuffleVector128(
+                    const leadByteLowNibbleErrors = simd.x86.shuffle128(
                         leadByteLowNibbleTable,
                         chunkWithPrevLowNibbles,
                     );
-                    const leadByteHighNibbleErrors = simd.x86.shuffleVector128(
+                    const leadByteHighNibbleErrors = simd.x86.shuffle128(
                         leadByteHighNibbleTable,
                         chunkWithPrevHighNibbles,
                     );
-                    const nextByteHighNibbleErrors = simd.x86.shuffleVector128(
+                    const nextByteHighNibbleErrors = simd.x86.shuffle128(
                         nextByteHighNibbleTable,
                         chunkHighNibbles,
                     );
@@ -240,12 +240,11 @@ pub const x86 = struct {
                 },
                 32 => {
                     // TODO
-
-                    const leadByteHalves = simd.x86.shuffleVector256(
+                    const leadByteHalves = simd.x86.shuffle256(
                         leadByteLowNibbleTable ++ leadByteHighNibbleTable,
                         chunkWithPrevLowNibbles ++ chunkWithPrevHighNibbles,
                     );
-                    const nextByteHighNibbleErrors = simd.x86.shuffleVector256(
+                    const nextByteHighNibbleErrors = simd.x86.shuffle256(
                         simd.expandVector(nextByteHighNibbleTable, 32),
                         simd.expandVector(chunkHighNibbles, 32),
                     );
@@ -256,15 +255,15 @@ pub const x86 = struct {
                     break :block .{ bytesMatch & invalidBytesMask, bytesMatch & doubleContinuationMask };
                 },
                 64 => {
-                    const leadByteLowNibbleErrors = simd.x86.shuffleVector512(
+                    const leadByteLowNibbleErrors = simd.x86.shuffle512(
                         leadByteLowNibbleTable,
                         chunkWithPrevLowNibbles,
                     );
-                    const leadByteHighNibbleErrors = simd.x86.shuffleVector512(
+                    const leadByteHighNibbleErrors = simd.x86.shuffle512(
                         leadByteHighNibbleTable,
                         chunkWithPrevHighNibbles,
                     );
-                    const nextByteHighNibbleErrors = simd.x86.shuffleVector512(
+                    const nextByteHighNibbleErrors = simd.x86.shuffle512(
                         nextByteHighNibbleTable,
                         chunkHighNibbles,
                     );
@@ -392,14 +391,14 @@ pub const x86 = struct {
         switch (comptime maxVectorLen) {
             16 => {
                 const lowNibblesMatch =
-                    simd.x86.shuffleVector128(leadsLowNibbleTable, chunkLowNibbles);
+                    simd.x86.shuffle128(leadsLowNibbleTable, chunkLowNibbles);
                 const highNibblesMatch =
-                    simd.x86.shuffleVector128(leadsHighNibbleTable, chunkHighNibbles);
+                    simd.x86.shuffle128(leadsHighNibbleTable, chunkHighNibbles);
 
                 return lowNibblesMatch & highNibblesMatch;
             },
             32 => {
-                const matchHalves = simd.x86.shuffleVector256(
+                const matchHalves = simd.x86.shuffle256(
                     leadsLowNibbleTable ++ leadsHighNibbleTable,
                     chunkLowNibbles ++ chunkHighNibbles,
                 );
@@ -408,9 +407,9 @@ pub const x86 = struct {
             },
             64 => {
                 const lowNibblesMatch =
-                    simd.x86.shuffleVector512(leadsLowNibbleTable, chunkLowNibbles);
+                    simd.x86.shuffle512(leadsLowNibbleTable, chunkLowNibbles);
                 const highNibblesMatch =
-                    simd.x86.shuffleVector512(leadsHighNibbleTable, chunkHighNibbles);
+                    simd.x86.shuffle512(leadsHighNibbleTable, chunkHighNibbles);
 
                 return lowNibblesMatch & highNibblesMatch;
             },
@@ -447,14 +446,14 @@ pub const x86 = struct {
         switch (comptime maxVectorLen) {
             16 => {
                 const lowNibblesMatch =
-                    simd.x86.shuffleVector128(leadsLowNibbleTable, chunkLowNibbles);
+                    simd.x86.shuffle128(leadsLowNibbleTable, chunkLowNibbles);
                 const highNibblesMatch =
-                    simd.x86.shuffleVector128(leadsHighNibbleTable, chunkHighNibbles);
+                    simd.x86.shuffle128(leadsHighNibbleTable, chunkHighNibbles);
 
                 return lowNibblesMatch & highNibblesMatch;
             },
             32 => {
-                const matchHalves = simd.x86.shuffleVector256(
+                const matchHalves = simd.x86.shuffle256(
                     leadsLowNibbleTable ++ leadsHighNibbleTable,
                     chunkLowNibbles ++ chunkHighNibbles,
                 );
@@ -463,9 +462,9 @@ pub const x86 = struct {
             },
             64 => {
                 const lowNibblesMatch =
-                    simd.x86.shuffleVector512(leadsLowNibbleTable, chunkLowNibbles);
+                    simd.x86.shuffle512(leadsLowNibbleTable, chunkLowNibbles);
                 const highNibblesMatch =
-                    simd.x86.shuffleVector512(leadsHighNibbleTable, chunkHighNibbles);
+                    simd.x86.shuffle512(leadsHighNibbleTable, chunkHighNibbles);
 
                 return lowNibblesMatch & highNibblesMatch;
             },
@@ -503,10 +502,10 @@ pub const aarch64 = struct {
         const leadsHighNibbles: @Vector(chunk.len, u8) =
             UTF8_THREE_BYTE_LEAD_TABLES.HIGH_NIBBLE_TABLE & doubleContinuationFlagVector;
 
-        return simd.aarch64.shuffleVector128(
+        return simd.aarch64.shuffle128(
             leadsLowNibbles,
             chunk,
-        ) & simd.aarch64.shuffleVector128(
+        ) & simd.aarch64.shuffle128(
             leadsHighNibbles,
             simd.getHighNibbles(chunkHighNibbles),
         );
@@ -527,10 +526,10 @@ pub const aarch64 = struct {
         const leadsHighNibbleTable: @Vector(chunk.len, u8) =
             UTF8_FOUR_BYTE_LEAD_TABLES.HIGH_NIBBLE_TABLE & doubleContinuationFlagVector;
 
-        return simd.aarch64.shuffleVector128(
+        return simd.aarch64.shuffle128(
             leadsLowNibbleTable,
             chunk,
-        ) & simd.aarch64.shuffleVector128(
+        ) & simd.aarch64.shuffle128(
             leadsHighNibbleTable,
             simd.getHighNibbles(chunkHighNibbles),
         );
