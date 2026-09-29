@@ -3,7 +3,7 @@ const Tokenizer = @This();
 // TODO: clear docs and comments
 // TODO: flag of disabling encoding validation for strings
 // TODO: padding (https://arxiv.org/html/2010.03090v5#S6 --- 6.3)
-// TODO: vpternlog replaces most of ordered instructions
+// TODO: it is unnecessary to get low nibbles of chunks on some architectures
 
 const std = @import("std");
 const builtin = @import("builtin");
@@ -343,7 +343,8 @@ pub fn next(self: *Tokenizer) usize {
                 if (!validateEncodingResult.isValid)
                     return NEXT_UTF8_ERROR;
 
-                const jsonCharLowNibbleTable: @Vector(chunk.len, u8) = JSON_CHAR_TABLES.LOW_NIBBLE_TABLE;
+                const jsonCharLowNibbleTable: @Vector(chunk.len, u8) =
+                    JSON_CHAR_TABLES.LOW_NIBBLE_TABLE;
                 const jsonCharHighNibbleTable =
                     simd.expandVector(JSON_CHAR_TABLES.HIGH_NIBBLE_TABLE, chunk.len);
 

@@ -164,6 +164,7 @@ pub const x86 = struct {
     /// before calling this function can cause wrong results.
     pub inline fn validateEncoding(
         chunk: anytype,
+        // TODO: reuse low nibbles
         /// High nibbles of the initial `chunk` are needed
         /// in this function, but low nibbles are not.
         /// Also, high nibbles are computed in `Tokenizer.next` in any way.
@@ -370,18 +371,18 @@ pub const x86 = struct {
         const chunkLen = chunkLowNibbles.len;
 
         // `validateEncoding` compares vector of 3-byte leads with
-        // vector of double continuation bytes bit-to-bit,
+        // vector of double continuation bytes (where bytes are the `DOUBLE_CONTINUATION_FLAG`),
         // so 3-byte leads must have the same bits
         const doubleContinuationFlagVector: @Vector(chunkLen, u8) =
             @splat(UTF8_TWO_BYTE_TABLES.DOUBLE_CONTINUATION_FLAG);
 
-        const threeByteLeadLowNibbleTable = comptime block: {
+        const leadsLowNibbleTable = comptime block: {
             const tableArray = UTF8_THREE_BYTE_LEAD_TABLES.LOW_NIBBLE_TABLE;
             const tableVector: @Vector(tableArray.len, u8) = tableArray;
 
             break :block simd.expandVector(tableVector, chunkLen) & doubleContinuationFlagVector;
         };
-        const threeByteLeadHighNibbleTable = comptime block: {
+        const leadsHighNibbleTable = comptime block: {
             const tableArray = UTF8_THREE_BYTE_LEAD_TABLES.HIGH_NIBBLE_TABLE;
             const tableVector: @Vector(tableArray.len, u8) = tableArray;
 
@@ -391,15 +392,15 @@ pub const x86 = struct {
         switch (comptime maxVectorLen) {
             16 => {
                 const lowNibblesMatch =
-                    simd.x86.shuffleVector128(threeByteLeadLowNibbleTable, chunkLowNibbles);
+                    simd.x86.shuffleVector128(leadsLowNibbleTable, chunkLowNibbles);
                 const highNibblesMatch =
-                    simd.x86.shuffleVector128(threeByteLeadHighNibbleTable, chunkHighNibbles);
+                    simd.x86.shuffleVector128(leadsHighNibbleTable, chunkHighNibbles);
 
                 return lowNibblesMatch & highNibblesMatch;
             },
             32 => {
                 const matchHalves = simd.x86.shuffleVector256(
-                    threeByteLeadLowNibbleTable ++ threeByteLeadHighNibbleTable,
+                    leadsLowNibbleTable ++ leadsHighNibbleTable,
                     chunkLowNibbles ++ chunkHighNibbles,
                 );
 
@@ -407,9 +408,9 @@ pub const x86 = struct {
             },
             64 => {
                 const lowNibblesMatch =
-                    simd.x86.shuffleVector512(threeByteLeadLowNibbleTable, chunkLowNibbles);
+                    simd.x86.shuffleVector512(leadsLowNibbleTable, chunkLowNibbles);
                 const highNibblesMatch =
-                    simd.x86.shuffleVector512(threeByteLeadHighNibbleTable, chunkHighNibbles);
+                    simd.x86.shuffleVector512(leadsHighNibbleTable, chunkHighNibbles);
 
                 return lowNibblesMatch & highNibblesMatch;
             },
@@ -425,18 +426,18 @@ pub const x86 = struct {
         const chunkLen = chunkLowNibbles.len;
 
         // `validateEncoding` compares vector of 4-byte leads with
-        // vector of double continuation bytes bit-to-bit,
+        // vector of double continuation bytes (where bytes are the `DOUBLE_CONTINUATION_FLAG`),
         // so 4-byte leads must have the same bits
         const doubleContinuationFlagVector: @Vector(chunkLen, u8) =
             @splat(UTF8_TWO_BYTE_TABLES.DOUBLE_CONTINUATION_FLAG);
 
-        const fourByteLeadLowNibbleTable = comptime block: {
+        const leadsLowNibbleTable = comptime block: {
             const tableArray = UTF8_FOUR_BYTE_LEAD_TABLES.LOW_NIBBLE_TABLE;
             const tableVector: @Vector(tableArray.len, u8) = tableArray;
 
             break :block simd.expandVector(tableVector, chunkLen) & doubleContinuationFlagVector;
         };
-        const fourByteLeadHighNibbleTable = comptime block: {
+        const leadsHighNibbleTable = comptime block: {
             const tableArray = UTF8_FOUR_BYTE_LEAD_TABLES.HIGH_NIBBLE_TABLE;
             const tableVector: @Vector(tableArray.len, u8) = tableArray;
 
@@ -446,15 +447,15 @@ pub const x86 = struct {
         switch (comptime maxVectorLen) {
             16 => {
                 const lowNibblesMatch =
-                    simd.x86.shuffleVector128(fourByteLeadLowNibbleTable, chunkLowNibbles);
+                    simd.x86.shuffleVector128(leadsLowNibbleTable, chunkLowNibbles);
                 const highNibblesMatch =
-                    simd.x86.shuffleVector128(fourByteLeadHighNibbleTable, chunkHighNibbles);
+                    simd.x86.shuffleVector128(leadsHighNibbleTable, chunkHighNibbles);
 
                 return lowNibblesMatch & highNibblesMatch;
             },
             32 => {
                 const matchHalves = simd.x86.shuffleVector256(
-                    fourByteLeadLowNibbleTable ++ fourByteLeadHighNibbleTable,
+                    leadsLowNibbleTable ++ leadsHighNibbleTable,
                     chunkLowNibbles ++ chunkHighNibbles,
                 );
 
@@ -462,9 +463,9 @@ pub const x86 = struct {
             },
             64 => {
                 const lowNibblesMatch =
-                    simd.x86.shuffleVector512(fourByteLeadLowNibbleTable, chunkLowNibbles);
+                    simd.x86.shuffleVector512(leadsLowNibbleTable, chunkLowNibbles);
                 const highNibblesMatch =
-                    simd.x86.shuffleVector512(fourByteLeadHighNibbleTable, chunkHighNibbles);
+                    simd.x86.shuffleVector512(leadsHighNibbleTable, chunkHighNibbles);
 
                 return lowNibblesMatch & highNibblesMatch;
             },
@@ -474,8 +475,7 @@ pub const x86 = struct {
     /// Returns `true` when `vector` with JSON chars contains ONLY the ASCII chars
     pub inline fn isVectorAscii(vector: anytype) bool {
         // All ASCII chars have the highest bit set to 0,
-        // so bytes that are zero in `vector`
-        // after AND with this mask are ASCII chars
+        // so bytes that became zero in `vector` after AND with this mask are ASCII chars
         const nonAsciiCharMasks: @TypeOf(vector) = @splat(0b10000000);
 
         return switch (comptime vector.len) {
@@ -487,12 +487,60 @@ pub const x86 = struct {
 };
 
 pub const aarch64 = struct {
-    /// Returns `true` when `vector` with JSON chars contains not only the ASCII chars.
+    inline fn getThreeByteLeads128(
+        chunk: @Vector(16, u8),
+        chunkHighNibbles: @Vector(16, u8),
+    ) @Vector(16, u8) {
+        // `validateEncoding` compares vector of 3-byte leads with
+        // vector of double continuation bytes (where bytes are the `DOUBLE_CONTINUATION_FLAG`),
+        // so 3-byte leads must have the same bits
+        const doubleContinuationFlagVector: @Vector(chunk.len, u8) =
+            @splat(UTF8_TWO_BYTE_TABLES.DOUBLE_CONTINUATION_FLAG);
+
+        const leadsLowNibbles: @Vector(chunk.len, u8) =
+            UTF8_THREE_BYTE_LEAD_TABLES.LOW_NIBBLE_TABLE & doubleContinuationFlagVector;
+
+        const leadsHighNibbles: @Vector(chunk.len, u8) =
+            UTF8_THREE_BYTE_LEAD_TABLES.HIGH_NIBBLE_TABLE & doubleContinuationFlagVector;
+
+        return simd.aarch64.shuffleVector128(
+            leadsLowNibbles,
+            chunk,
+        ) & simd.aarch64.shuffleVector128(
+            leadsHighNibbles,
+            simd.getHighNibbles(chunkHighNibbles),
+        );
+    }
+    inline fn getFourByteLeads128(
+        chunk: @Vector(16, u8),
+        chunkHighNibbles: @Vector(16, u8),
+    ) @Vector(16, u8) {
+        // `validateEncoding` compares vector of 4-byte leads with
+        // vector of double continuation bytes (where bytes are the `DOUBLE_CONTINUATION_FLAG`),
+        // so 4-byte leads must have the same bits
+        const doubleContinuationFlagVector: @Vector(chunk.len, u8) =
+            @splat(UTF8_TWO_BYTE_TABLES.DOUBLE_CONTINUATION_FLAG);
+
+        const leadsLowNibbleTable: @Vector(chunk.len, u8) =
+            UTF8_FOUR_BYTE_LEAD_TABLES.LOW_NIBBLE_TABLE & doubleContinuationFlagVector;
+
+        const leadsHighNibbleTable: @Vector(chunk.len, u8) =
+            UTF8_FOUR_BYTE_LEAD_TABLES.HIGH_NIBBLE_TABLE & doubleContinuationFlagVector;
+
+        return simd.aarch64.shuffleVector128(
+            leadsLowNibbleTable,
+            chunk,
+        ) & simd.aarch64.shuffleVector128(
+            leadsHighNibbleTable,
+            simd.getHighNibbles(chunkHighNibbles),
+        );
+    }
+
+    /// Returns `true` when `vector` with JSON chars contains ONLY the ASCII chars.
     pub inline fn isVectorAscii128(vector: @Vector(16, u8)) bool {
         // All ASCII chars have the highest bit set to 0,
-        // so bytes that are zero in `vector`
-        // after AND with this mask are ASCII chars
-        const nonAsciiCharMasks: @Vector(16, u8) = @splat(0b10000000);
+        // so bytes that became zero in `vector` after AND with this mask are ASCII chars
+        const nonAsciiCharMasks: @Vector(vector.len, u8) = @splat(0b10000000);
 
         return simd.aarch64.eqlToBits128(vector & nonAsciiCharMasks, nonAsciiCharMasks) == 0;
     }

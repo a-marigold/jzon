@@ -4,6 +4,9 @@
 // TODO: 16, 64 byte order
 // TODO: use all 32 bytes on avx2
 
+// TODO: maybe instisics
+// TODO: 'shuffleVector' to 'shuffle'
+
 const std = @import("std");
 const Target = std.Target;
 const builtin = @import("builtin");
