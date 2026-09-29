@@ -294,7 +294,7 @@ pub fn next(self: *Tokenizer) usize {
                 else => unreachable,
             };
 
-            const stringsMask, const stringContext = block: {
+            const stringsMask, const newStringContext = block: {
                 const anyQuotesMask: u64 = eqlToBits(chunk, @splat('"'));
                 const backslashMask: u64 = eqlToBits(chunk, @splat('\\'));
 
@@ -304,11 +304,11 @@ pub fn next(self: *Tokenizer) usize {
                     self.stringContext,
                 );
 
-                break :block .{ result.stringsMask, result.stringContext };
+                break :block .{ result.stringsMask, result.newStringContext };
             };
 
-            self.stringContext = stringContext;
-            self.encodingContext = validateEncodingResult.encodingContext;
+            self.stringContext = newStringContext;
+            self.encodingContext = validateEncodingResult.newEncodingContext;
 
             const jsonCharsMask = getJsonCharsMask(
                 anyControlCharsMask,
@@ -337,6 +337,11 @@ pub fn next(self: *Tokenizer) usize {
                 }
 
                 const chunk: @Vector(maxVectorLen, u8) = source[0..maxVectorLen].*;
+
+                const validateEncodingResult = encoding.aarch64.validateEncoding();
+
+                if (!validateEncodingResult.isValid)
+                    return NEXT_UTF8_ERROR;
 
                 const jsonCharLowNibbleTable: @Vector(chunk.len, u8) = JSON_CHAR_TABLES.LOW_NIBBLE_TABLE;
                 const jsonCharHighNibbleTable =
@@ -377,7 +382,7 @@ pub fn next(self: *Tokenizer) usize {
                         backslashMask,
                         self.stringContext,
                     );
-                    break :block .{ result.stringsMask, result.stringContext };
+                    break :block .{ result.stringsMask, result.newStringContext };
                 };
 
                 const jsonCharsMask = getJsonCharsMask(
@@ -395,7 +400,7 @@ pub fn next(self: *Tokenizer) usize {
                 } else return NEXT_TRIVIA;
             },
 
-            // Variable vector length (sve2)
+            // Scalable vector length (sve2)
             0 => {},
         },
     }
@@ -434,12 +439,12 @@ inline fn getJsonCharsMask(anyControlCharsMask: u64, anyWhitespacesMask: u64, st
 inline fn getStringsMask(
     anyQuotesMask: u64,
     backslashMask: u64,
-    prevStringContext: StringContext,
-) struct { stringsMask: u64, stringContext: StringContext } {
+    stringContext: StringContext,
+) struct { stringsMask: u64, newStringContext: StringContext } {
     const escapedCharsMask, const isEndedWithEscaping = block: {
         const result = getEscapedCharsMask(
             backslashMask,
-            prevStringContext.isEndedWithEscaping,
+            stringContext.isEndedWithEscaping,
         );
 
         break :block .{ result.escapedCharsMask, result.isEndedWithEscaping };
@@ -453,11 +458,11 @@ inline fn getStringsMask(
     // If the prev SIMD-chunk has an unclosed string,
     // `stringContext.isStringOpened` contains all bits set to 1,
     // and XOR with the string mask and `isPrevStringOpened` inverts strings
-    const actualStringsMask = stringsMask ^ prevStringContext.isStringOpened;
+    const actualStringsMask = stringsMask ^ stringContext.isStringOpened;
 
     return .{
         .stringsMask = actualStringsMask,
-        .stringContext = .{
+        .newStringContext = .{
             .isStringOpened = isStringsMaskOpened(actualStringsMask),
             .isEndedWithEscaping = isEndedWithEscaping,
         },

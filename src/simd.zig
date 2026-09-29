@@ -3,7 +3,6 @@
 // TODO: intel syntax x64
 // TODO: 16, 64 byte order
 // TODO: use all 32 bytes on avx2
-// TODO: 'variable' to 'scalable'
 
 const std = @import("std");
 const Target = std.Target;
@@ -168,21 +167,18 @@ pub const x86 = struct {
     /// Returns `true` if every element of `vector` is zero.
     ///
     /// `T` is either `u8` or `bool`.
-    pub inline fn isZero512(comptime T: type, vector: @Vector(64, T)) bool {
+    pub inline fn isZero512(comptime E: type, vector: @Vector(64, E)) bool {
         return @reduce(.Or, vector) == 0;
     }
     /// Returns `true` if at least one element of `vector` isn't zero.
     ///
     /// `T` is either `u8` or `bool`.
-    pub inline fn isNonZero512(comptime T: type, vector: @Vector(64, T)) bool {
+    pub inline fn isNonZero512(comptime E: type, vector: @Vector(64, E)) bool {
         return @reduce(.Or, vector) != 0;
     }
 
-    /// Example:
-    ///
-    /// `vector = .{ 0, 1, 2, 3 }`.
-    ///
-    /// The result is `.{ 0, 0, 1, 2 }`.
+    /// Shifts bytes of `vector` to the right,
+    /// filling shifted bytes at the left with 0.
     pub inline fn shiftRight128(vector: @Vector(16, u8), shiftBytesAmount: u8) @Vector(16, u8) {
         asm ("psrldq %[shiftBytesAmount], %[vector]"
             : [vector] "=v" (vector),
@@ -210,11 +206,8 @@ pub const x86 = struct {
         );
     }
 
-    /// Example:
-    ///
-    /// `vector = .{ 0, 1, 2, 3 }`.
-    ///
-    /// The result is `.{ 0, 0, 1, 2 }`.
+    /// Shifts bytes of `vector` to the right,
+    /// filling shifted bytes at the left with 0.
     pub inline fn shiftRight512(vector: @Vector(64, u8), shiftBytesAmount: u8) @Vector(64, u8) {
         return asm ("vpsrldq %[shiftBytesAmount], %[vector], %[result]"
             : [result] "=v" (-> @Vector(64, u8)),
@@ -223,11 +216,9 @@ pub const x86 = struct {
         );
     }
 
-    /// Example:
-    ///
-    /// `a = .{ 0, 1, 2, 3 }` and `b = .{ 4, 5, 6, 7 }`
-    ///
-    /// The result is `.{ 0, 0, 4, 5 }`
+    /// Shifts bytes of `b` to the right,
+    /// filling shifted bytes at the left of `b`
+    /// with the last bytes of `a`.
     pub inline fn mergeShiftRight512(
         a: @Vector(64, u8),
         b: @Vector(64, u8),
@@ -255,7 +246,7 @@ pub const x86 = struct {
 };
 
 pub const aarch64 = struct {
-    /// Returns 0 if the length of vector registers is variable (`sve2`).
+    /// Returns 0 if the length of vector registers is scalable (`sve2`).
     ///
     /// Returns 16 in case of `neon` extension support.
     ///
@@ -271,14 +262,12 @@ pub const aarch64 = struct {
             null;
     }
 
-    /// Calling this function without checking `isVariableVectorLen_aarch64` is illegal.
-    ///
-    /// Returns the length in bytes of one vector registers.
+    /// Returns the length in bytes of scalable vector registers.
     ///
     /// The result of this function should never be persisted 'cause it varies
     /// accross the CPU threads, and if the OS moves the parser
     /// to another thread during a context switch, the result can change.
-    pub inline fn getVariableVectorLen() usize {
+    pub inline fn getScalableVectorLen() usize {
         return asm ("cntb %[result]"
             : [result] "=r" (-> usize),
         );
@@ -322,11 +311,8 @@ pub const aarch64 = struct {
         return ~eqlToBits128(a, b);
     }
 
-    /// Example:
-    ///
-    /// `vector = .{ 0, 1, 2, 3 }`.
-    ///
-    /// The result is `.{ 0, 0, 1, 2 }`.
+    /// Shifts bytes of `vector` to the right,
+    /// filling shifted bytes at the left with 0.
     pub inline fn shiftRight128(
         vector: @Vector(16, u8),
         comptime shiftBytesAmount: u8,
@@ -334,11 +320,9 @@ pub const aarch64 = struct {
         return mergeShiftRight128(@splat(0), vector, shiftBytesAmount);
     }
 
-    /// Example:
-    ///
-    /// `a = .{ 0, 1, 2, 3 }` and `b = .{ 4, 5, 6, 7 }`.
-    ///
-    /// The result is `.{ 2, 3, 4, 5 }`.
+    /// Shifts bytes of `b` to the right,
+    /// filling shifted bytes at the left of `b`
+    /// with the last bytes of `a`.
     pub inline fn mergeShiftRight128(
         a: @Vector(16, u8),
         b: @Vector(16, u8),
