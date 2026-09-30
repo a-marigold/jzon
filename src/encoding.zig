@@ -182,11 +182,12 @@ pub const x86 = struct {
         const chunkWithPrev = mergeShiftRight(encodingContext.prevChunk, chunk, 1);
 
         // Fast path
+
         if (isVectorAscii(chunkWithPrev))
             return .{
                 .isValid = true,
                 .newEncodingContext = .{
-                    .prevChunk = chunkWithPrev,
+                    .prevChunk = @splat(0),
                     .prevThreeByteLeads = @splat(0),
                     .prevFourByteLeads = @splat(0),
                 },
@@ -215,66 +216,56 @@ pub const x86 = struct {
         const chunkWithPrevHighNibbles = simd.getHighNibbles(chunkWithPrev);
 
         const invalidBytes, const doubleContinuationStarts = block: {
-            const doubleContinuationMask = UTF8_TWO_BYTE_TABLES.DOUBLE_CONTINUATION_FLAG;
-            const invalidBytesMask = comptime ~doubleContinuationMask;
+            const doubleContinuationFlagVector: @Vector(chunk.len, u8) =
+                @splat(UTF8_TWO_BYTE_TABLES.DOUBLE_CONTINUATION_FLAG);
+            const invalidBytesMaskVector = comptime ~doubleContinuationFlagVector;
 
             switch (comptime maxVectorLen) {
                 16 => {
-                    const leadByteLowNibbleErrors = simd.x86.shuffle128(
-                        leadByteLowNibbleTable,
-                        chunkWithPrevLowNibbles,
-                    );
-                    const leadByteHighNibbleErrors = simd.x86.shuffle128(
-                        leadByteHighNibbleTable,
-                        chunkWithPrevHighNibbles,
-                    );
-                    const nextByteHighNibbleErrors = simd.x86.shuffle128(
-                        nextByteHighNibbleTable,
-                        chunkHighNibbles,
-                    );
+                    const twoBytesMatch =
+                        simd.x86.shuffle128(leadByteLowNibbleTable, chunkWithPrevLowNibbles) &
+                        simd.x86.shuffle128(leadByteHighNibbleTable, chunkWithPrevHighNibbles) &
+                        simd.x86.shuffle128(nextByteHighNibbleTable, chunkHighNibbles);
 
-                    const bytesMatch =
-                        leadByteLowNibbleErrors & leadByteHighNibbleErrors & nextByteHighNibbleErrors;
-
-                    break :block .{ bytesMatch & invalidBytesMask, bytesMatch & doubleContinuationMask };
+                    break :block .{ twoBytesMatch & invalidBytesMaskVector, twoBytesMatch & doubleContinuationFlagVector };
                 },
                 32 => {
-                    // TODO
+                    // TODO: it is totally wrong
                     const leadByteHalves = simd.x86.shuffle256(
                         leadByteLowNibbleTable ++ leadByteHighNibbleTable,
                         chunkWithPrevLowNibbles ++ chunkWithPrevHighNibbles,
                     );
-                    const nextByteHighNibbleErrors = simd.x86.shuffle256(
+                    const nextByteHighNibblesMatch = simd.x86.shuffle256(
                         simd.expandVector(nextByteHighNibbleTable, 32),
                         simd.expandVector(chunkHighNibbles, 32),
                     );
 
                     const bytesMatch =
-                        leadByteHalves & nextByteHighNibbleErrors & leadByteHalves[16..];
+                        leadByteHalves & nextByteHighNibblesMatch & leadByteHalves[16..];
 
-                    break :block .{ bytesMatch & invalidBytesMask, bytesMatch & doubleContinuationMask };
+                    break :block .{ bytesMatch & invalidBytesMaskVector, bytesMatch & doubleContinuationFlagVector };
                 },
                 64 => {
-                    const leadByteLowNibbleErrors = simd.x86.shuffle512(
+                    const leadByteLowNibblesMatch = simd.x86.shuffle512(
                         leadByteLowNibbleTable,
                         chunkWithPrevLowNibbles,
                     );
-                    const leadByteHighNibbleErrors = simd.x86.shuffle512(
+                    const leadByteHighNibblesMatch = simd.x86.shuffle512(
                         leadByteHighNibbleTable,
                         chunkWithPrevHighNibbles,
                     );
-                    const nextByteHighNibbleErrors = simd.x86.shuffle512(
+                    const nextByteHighNibblesMatch = simd.x86.shuffle512(
                         nextByteHighNibbleTable,
                         chunkHighNibbles,
                     );
 
                     const bytesMatch = simd.x86.tripleAnd512(
-                        leadByteLowNibbleErrors,
-                        leadByteHighNibbleErrors,
-                        nextByteHighNibbleErrors,
+                        leadByteLowNibblesMatch,
+                        leadByteHighNibblesMatch,
+                        nextByteHighNibblesMatch,
                     );
 
-                    break :block .{ bytesMatch & invalidBytesMask, bytesMatch & doubleContinuationMask };
+                    break :block .{ bytesMatch & invalidBytesMaskVector, bytesMatch & doubleContinuationFlagVector };
                 },
                 else => unreachable,
             }
@@ -290,7 +281,7 @@ pub const x86 = struct {
             return .{
                 .isValid = false,
                 .newEncodingContext = .{
-                    .prevChunk = chunkWithPrev,
+                    .prevChunk = @splat(0),
                     .prevThreeByteLeads = @splat(0),
                     .prevFourByteLeads = @splat(0),
                 },
@@ -344,7 +335,7 @@ pub const x86 = struct {
             return .{
                 .isValid = false,
                 .newEncodingContext = .{
-                    .prevChunk = chunkWithPrev,
+                    .prevChunk = @splat(0),
                     .prevThreeByteLeads = @splat(0),
                     .prevFourByteLeads = @splat(0),
                 },
@@ -389,15 +380,10 @@ pub const x86 = struct {
         };
 
         switch (comptime maxVectorLen) {
-            16 => {
-                const lowNibblesMatch =
-                    simd.x86.shuffle128(leadsLowNibbleTable, chunkLowNibbles);
-                const highNibblesMatch =
-                    simd.x86.shuffle128(leadsHighNibbleTable, chunkHighNibbles);
-
-                return lowNibblesMatch & highNibblesMatch;
-            },
+            16 => simd.x86.shuffle128(leadsLowNibbleTable, chunkLowNibbles) &
+                simd.x86.shuffle128(leadsHighNibbleTable, chunkHighNibbles),
             32 => {
+                // TODO: it is totally wrong
                 const matchHalves = simd.x86.shuffle256(
                     leadsLowNibbleTable ++ leadsHighNibbleTable,
                     chunkLowNibbles ++ chunkHighNibbles,
@@ -405,14 +391,8 @@ pub const x86 = struct {
 
                 return matchHalves[0..16] & matchHalves[16..];
             },
-            64 => {
-                const lowNibblesMatch =
-                    simd.x86.shuffle512(leadsLowNibbleTable, chunkLowNibbles);
-                const highNibblesMatch =
-                    simd.x86.shuffle512(leadsHighNibbleTable, chunkHighNibbles);
-
-                return lowNibblesMatch & highNibblesMatch;
-            },
+            64 => simd.x86.shuffle512(leadsLowNibbleTable, chunkLowNibbles) &
+                simd.x86.shuffle512(leadsHighNibbleTable, chunkHighNibbles),
         }
     }
     /// Three 4-byte leaders in the returned vector have
@@ -444,30 +424,19 @@ pub const x86 = struct {
         };
 
         switch (comptime maxVectorLen) {
-            16 => {
-                const lowNibblesMatch =
-                    simd.x86.shuffle128(leadsLowNibbleTable, chunkLowNibbles);
-                const highNibblesMatch =
-                    simd.x86.shuffle128(leadsHighNibbleTable, chunkHighNibbles);
-
-                return lowNibblesMatch & highNibblesMatch;
-            },
+            16 => simd.x86.shuffle128(leadsLowNibbleTable, chunkLowNibbles) &
+                simd.x86.shuffle128(leadsHighNibbleTable, chunkHighNibbles),
             32 => {
-                const matchHalves = simd.x86.shuffle256(
+                // TODO: it is totally wrong
+                const nibblesMatchHalves = simd.x86.shuffle256(
                     leadsLowNibbleTable ++ leadsHighNibbleTable,
                     chunkLowNibbles ++ chunkHighNibbles,
                 );
 
-                return matchHalves[0..16] & matchHalves[16..];
+                return nibblesMatchHalves[0..16] & nibblesMatchHalves[16..];
             },
-            64 => {
-                const lowNibblesMatch =
-                    simd.x86.shuffle512(leadsLowNibbleTable, chunkLowNibbles);
-                const highNibblesMatch =
-                    simd.x86.shuffle512(leadsHighNibbleTable, chunkHighNibbles);
-
-                return lowNibblesMatch & highNibblesMatch;
-            },
+            64 => simd.x86.shuffle512(leadsLowNibbleTable, chunkLowNibbles) &
+                simd.x86.shuffle512(leadsHighNibbleTable, chunkHighNibbles),
         }
     }
 
@@ -475,17 +444,106 @@ pub const x86 = struct {
     pub inline fn isVectorAscii(vector: anytype) bool {
         // All ASCII chars have the highest bit set to 0,
         // so bytes that became zero in `vector` after AND with this mask are ASCII chars
-        const nonAsciiCharMasks: @TypeOf(vector) = @splat(0b10000000);
+        const nonAsciiMaskVector: @TypeOf(vector) = @splat(0b10000000);
 
         return switch (comptime vector.len) {
-            16 => simd.x86.eqlToBits128(vector & nonAsciiCharMasks, nonAsciiCharMasks) == 0,
-            64 => simd.x86.andToBits512(vector, nonAsciiCharMasks) == 0,
+            16 => simd.x86.eqlToBits128(vector & nonAsciiMaskVector, nonAsciiMaskVector) == 0,
+            64 => simd.x86.andToBits512(vector, nonAsciiMaskVector) == 0,
             else => unreachable,
         };
     }
 };
 
 pub const aarch64 = struct {
+    pub inline fn vaildateEncoding128(
+        chunk: @Vector(16, u8),
+        chunkHighNibbles: @Vector(16, u8),
+        encodingContext: EncodingContext,
+    ) ValidateEncodingResult {
+        const chunkWithPrev = simd.aarch64.mergeShiftRight128(
+            encodingContext.prevChunk,
+            chunk,
+            1,
+        );
+
+        if (isVectorAscii128(chunkWithPrev))
+            return .{
+                .isValid = true,
+                .newEncodingContext = .{
+                    .prevChunk = @splat(0),
+                    .prevThreeByteLeads = @splat(0),
+                    .prevFourByteLeads = @splat(0),
+                },
+            };
+
+        const leadByteLowNibbleTable: @Vector(chunk.len, u8) =
+            UTF8_TWO_BYTE_TABLES.LEAD_BYTE_LOW_NIBBLE_TABLE;
+        const leadByteHighNibbleTable: @Vector(chunk.len, u8) =
+            UTF8_TWO_BYTE_TABLES.LEAD_BYTE_HIGH_NIBBLE_TABLE;
+        const nextByteHighNibbleTable: @Vector(chunk.len, u8) =
+            UTF8_TWO_BYTE_TABLES.NEXT_BYTE_HIGH_NIBBLE_TABLE;
+
+        const chunkWithPrevLowNibbles = simd.getLowNibbles(chunkWithPrev);
+        const chunkWithPrevHighNibbles = simd.getHighNibbles(chunkWithPrev);
+
+        const doubleContinuationFlagVector: @Vector(chunk.len, u8) = UTF8_TWO_BYTE_TABLES.DOUBLE_CONTINUATION_FLAG;
+        const invalidBytesMaskVector: @Vector(chunk.len, u8) = comptime ~doubleContinuationFlagVector;
+
+        const invalidBytes, const doubleContinuationStarts = block: {
+            const twoBytesMatch =
+                simd.aarch64.shuffle128(leadByteLowNibbleTable, chunkWithPrevLowNibbles) &
+                simd.aarch64.shuffle128(leadByteHighNibbleTable, chunkWithPrevHighNibbles) &
+                simd.aarch64.shuffle128(nextByteHighNibbleTable, chunkHighNibbles);
+
+            break :block .{ twoBytesMatch & invalidBytesMaskVector, twoBytesMatch & doubleContinuationFlagVector };
+        };
+
+        if (simd.aarch64.notEqlToBits128(invalidBytes, @splat(0)) == 0)
+            return .{
+                .isValid = false,
+                .newEncodingContext = .{
+                    .prevChunk = @splat(0),
+                    .prevThreeByteLeads = @splat(0),
+                    .prevFourByteLeads = @splat(0),
+                },
+            };
+
+        const threeByteLeads =
+            getThreeByteLeads128(chunkWithPrevLowNibbles, chunkWithPrevHighNibbles);
+        const fourByteLeads =
+            getThreeByteLeads128(chunkWithPrevLowNibbles, chunkWithPrevHighNibbles);
+
+        const expectedDoubleContinuationStarts = block: {
+            const expectedThreeByteContinuationStarts =
+                simd.aarch64.mergeShiftRight128(encodingContext.prevThreeByteLeads, threeByteLeads, 1);
+
+            const expectedFourByteContinuationStarts =
+                simd.aarch64.mergeShiftRight128(encodingContext.prevFourByteLeads, fourByteLeads, 1) |
+                simd.aarch64.mergeShiftRight128(encodingContext.prevFourByteLeads, fourByteLeads, 2);
+
+            break :block expectedThreeByteContinuationStarts | expectedFourByteContinuationStarts;
+        };
+
+        if (simd.aarch64.eqlToBits128(doubleContinuationStarts, doubleContinuationFlagVector) == 0)
+            return .{
+                .isValid = false,
+                .newEncodingContext = .{
+                    .prevChunk = @splat(0),
+                    .prevThreeByteLeads = @splat(0),
+                    .prevFourByteLeads = @splat(0),
+                },
+            };
+
+        return .{
+            .isValid = true,
+            .newEncodingContext = .{
+                .prevChunk = chunkWithPrev,
+                .prevThreeByteLeads = threeByteLeads,
+                .prevFourByteLeads = fourByteLeads,
+            },
+        };
+    }
+
     inline fn getThreeByteLeads128(
         chunk: @Vector(16, u8),
         chunkHighNibbles: @Vector(16, u8),

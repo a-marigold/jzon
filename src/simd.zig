@@ -64,8 +64,6 @@ pub const x86 = struct {
     /// That is, it is like a parallel `shuffle128` for two masks and vectors.
     ///
     /// Returns the resulting vector.
-    ///
-    /// Split the result in halves of 128-bits to get the two results.
     pub inline fn shuffle256(
         vector: @Vector(32, u8),
         mask: @Vector(32, u8),
@@ -150,7 +148,7 @@ pub const x86 = struct {
         );
     }
 
-    /// Does bitwise AND between `a`, `b`, and `c`.
+    /// Does bitwise AND between `a`, `b`, and `c` at once.
     pub inline fn tripleAnd512(
         a: @Vector(64, u8),
         b: @Vector(64, u8),
@@ -336,6 +334,8 @@ pub const aarch64 = struct {
               [start] "I" (comptime 16 - shiftBytesAmount),
         );
     }
+
+    // TODO: whole equal to bits
 
     /// Returns a bit mask, where 1 is at indexes,
     /// at which `vector` has bytes with high bit 1.

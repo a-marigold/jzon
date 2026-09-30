@@ -208,7 +208,7 @@ pub fn next(self: *Tokenizer) usize {
 
             if (chunk.len > source.len) break :simd;
 
-            // TODO: low nibbles are not always needed
+            // TODO: low nibbles may not be needed if only 8 or 16 nibbles are indexes
             const chunkLowNibbles = simd.getLowNibbles(chunk);
             const chunkHighNibbles = simd.getHighNibbles(chunk);
 
@@ -257,6 +257,7 @@ pub fn next(self: *Tokenizer) usize {
                     };
                 },
                 32 => {
+                    // TODO: AVX2 actually can do classification in 2 instructions
                     const nibblesMatchHalves = simd.x86.shuffle256(
                         jsonCharLowNibbleTable ++ jsonCharHighNibbleTable,
                         chunkLowNibbles ++ chunkHighNibbles,
