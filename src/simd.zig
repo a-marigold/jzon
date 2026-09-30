@@ -3,8 +3,7 @@
 // TODO: 16, 64 byte order
 // TODO: use all 32 bytes on avx2
 
-// TODO: maybe instisics
-// TODO: 'shuffle' to 'shuffle'
+// TODO: maybe instinsics
 
 const std = @import("std");
 const Target = std.Target;
@@ -308,6 +307,26 @@ pub const aarch64 = struct {
     /// where bit is set to 1 if the elements equal.
     pub inline fn notEqlToBits128(a: @Vector(16, u8), b: @Vector(16, u8)) u64 {
         return ~eqlToBits128(a, b);
+    }
+
+    /// Returns `true` if `a` and `b` are equal in bits.
+    ///
+    /// It is faster than `eqlToBits` or `notEqlToBits` followed by `==`,
+    /// because it doesn't move the resulting vector to a mask.
+    pub inline fn eqlWhole128(a: @Vector(16, u8), b: @Vector(16, u8)) bool {
+        var comparedVector: @Vector(16, u8) = undefined;
+
+        const isEqual = asm (
+            \\ cmeq %[comparedVector].16b, %[a].16b, %[b].16b
+            \\ uminv %[comparedVector].b[0], %[comparedVector].16b
+            \\ umov %[result], %[comparedVector].b[0]
+            : [result] "=r" (-> u64),
+              [comparedVector] "=w" (comparedVector),
+            : [a] "w" (a),
+              [b] "w" (b),
+        );
+
+        return isEqual == 0b11111111;
     }
 
     /// Shifts bytes of `vector` to the right,
