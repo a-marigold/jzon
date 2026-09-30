@@ -184,14 +184,7 @@ pub const x86 = struct {
         // Fast path
 
         if (isVectorAscii(chunkWithPrev))
-            return .{
-                .isValid = true,
-                .newEncodingContext = .{
-                    .prevChunk = @splat(0),
-                    .prevThreeByteLeads = @splat(0),
-                    .prevFourByteLeads = @splat(0),
-                },
-            };
+            return .{ .isValid = true, .newEncodingContext = .empty };
 
         const leadByteLowNibbleTable = comptime block: {
             const tableArray = UTF8_TWO_BYTE_TABLES.LEAD_BYTE_LOW_NIBBLE_TABLE;
@@ -278,14 +271,7 @@ pub const x86 = struct {
         };
 
         if (isTwoByteError)
-            return .{
-                .isValid = false,
-                .newEncodingContext = .{
-                    .prevChunk = @splat(0),
-                    .prevThreeByteLeads = @splat(0),
-                    .prevFourByteLeads = @splat(0),
-                },
-            };
+            return .{ .isValid = false, .newEncodingContext = .empty };
 
         const threeByteLeads = getThreeByteLeads(
             chunkWithPrevLowNibbles,
@@ -460,21 +446,11 @@ pub const aarch64 = struct {
         chunkHighNibbles: @Vector(16, u8),
         encodingContext: EncodingContext,
     ) ValidateEncodingResult {
-        const chunkWithPrev = simd.aarch64.mergeShiftRight128(
-            encodingContext.prevChunk,
-            chunk,
-            1,
-        );
+        const chunkWithPrev =
+            simd.aarch64.mergeShiftRight128(encodingContext.prevChunk, chunk, 1);
 
         if (isVectorAscii128(chunkWithPrev))
-            return .{
-                .isValid = true,
-                .newEncodingContext = .{
-                    .prevChunk = @splat(0),
-                    .prevThreeByteLeads = @splat(0),
-                    .prevFourByteLeads = @splat(0),
-                },
-            };
+            return .{ .isValid = true, .newEncodingContext = .empty };
 
         const leadByteLowNibbleTable: @Vector(chunk.len, u8) =
             UTF8_TWO_BYTE_TABLES.LEAD_BYTE_LOW_NIBBLE_TABLE;
@@ -524,15 +500,8 @@ pub const aarch64 = struct {
             break :block expectedThreeByteContinuationStarts | expectedFourByteContinuationStarts;
         };
 
-        if (simd.aarch64.eqlToBits128(doubleContinuationStarts, doubleContinuationFlagVector) == 0)
-            return .{
-                .isValid = false,
-                .newEncodingContext = .{
-                    .prevChunk = @splat(0),
-                    .prevThreeByteLeads = @splat(0),
-                    .prevFourByteLeads = @splat(0),
-                },
-            };
+        if (simd.aarch64.eqlToBits128(doubleContinuationStarts, expectedDoubleContinuationStarts) == 0)
+            return .{ .isValid = false, .newEncodingContext = .empty };
 
         return .{
             .isValid = true,

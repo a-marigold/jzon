@@ -156,6 +156,12 @@ pub const EncodingContext = struct {
     prevChunk: @Vector(64, u8),
     prevThreeByteLeads: @Vector(64, u8),
     prevFourByteLeads: @Vector(64, u8),
+
+    pub const empty: EncodingContext = .{
+        .prevChunk = @splat(0),
+        .prevThreeByteLeads = @splat(0),
+        .prevFourByteLeads = @splat(0),
+    };
 };
 
 pub const NextReturnType = @typeInfo(@TypeOf(next)).@"fn".return_type.?;
