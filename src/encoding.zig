@@ -462,8 +462,9 @@ pub const aarch64 = struct {
         const chunkWithPrevLowNibbles = simd.getLowNibbles(chunkWithPrev);
         const chunkWithPrevHighNibbles = simd.getHighNibbles(chunkWithPrev);
 
-        const doubleContinuationFlagVector: @Vector(chunk.len, u8) = UTF8_TWO_BYTE_TABLES.DOUBLE_CONTINUATION_FLAG;
-        const invalidBytesMaskVector: @Vector(chunk.len, u8) = comptime ~doubleContinuationFlagVector;
+        const doubleContinuationFlagVector: @Vector(chunk.len, u8) =
+            @splat(UTF8_TWO_BYTE_TABLES.DOUBLE_CONTINUATION_FLAG);
+        const invalidBytesMaskVector = comptime ~doubleContinuationFlagVector;
 
         const invalidBytes, const doubleContinuationStarts = block: {
             const twoBytesMatch =
@@ -474,7 +475,7 @@ pub const aarch64 = struct {
             break :block .{ twoBytesMatch & invalidBytesMaskVector, twoBytesMatch & doubleContinuationFlagVector };
         };
 
-        if (simd.aarch64.notEqlToBits128(invalidBytes, @splat(0)) == 0)
+        if (!simd.aarch64.eqlWhole128(invalidBytes, @splat(0)))
             return .{
                 .isValid = false,
                 .newEncodingContext = .{
@@ -500,7 +501,7 @@ pub const aarch64 = struct {
             break :block expectedThreeByteContinuationStarts | expectedFourByteContinuationStarts;
         };
 
-        if (simd.aarch64.eqlToBits128(doubleContinuationStarts, expectedDoubleContinuationStarts) == 0)
+        if (simd.aarch64.eqlWhole128(doubleContinuationStarts, expectedDoubleContinuationStarts))
             return .{ .isValid = false, .newEncodingContext = .empty };
 
         return .{
@@ -512,20 +513,21 @@ pub const aarch64 = struct {
             },
         };
     }
-
     inline fn getThreeByteLeads128(
         chunkLowNibbles: @Vector(16, u8),
         chunkHighNibbles: @Vector(16, u8),
     ) @Vector(16, u8) {
+        const chunkLen = chunkLowNibbles.len;
+
         // `validateEncoding` compares vector of 3-byte leads with
         // vector of double continuation bytes (where bytes are the `DOUBLE_CONTINUATION_FLAG`),
         // so 3-byte leads must have the same bits
-        const doubleContinuationFlagVector: @Vector(chunkLowNibbles.len, u8) =
+        const doubleContinuationFlagVector: @Vector(chunkLen, u8) =
             @splat(UTF8_TWO_BYTE_TABLES.DOUBLE_CONTINUATION_FLAG);
 
-        const leadsLowNibbles: @Vector(chunkLowNibbles.len, u8) =
+        const leadsLowNibbles: @Vector(chunkLen, u8) =
             UTF8_THREE_BYTE_LEAD_TABLES.LOW_NIBBLE_TABLE & doubleContinuationFlagVector;
-        const leadsHighNibbles: @Vector(chunkLowNibbles.len, u8) =
+        const leadsHighNibbles: @Vector(chunkLen, u8) =
             UTF8_THREE_BYTE_LEAD_TABLES.HIGH_NIBBLE_TABLE & doubleContinuationFlagVector;
 
         return simd.aarch64.shuffle128(leadsLowNibbles, chunkLowNibbles) &
@@ -535,15 +537,17 @@ pub const aarch64 = struct {
         chunkLowNibbles: @Vector(16, u8),
         chunkHighNibbles: @Vector(16, u8),
     ) @Vector(16, u8) {
+        const chunkLen = chunkLowNibbles.len;
+
         // `validateEncoding` compares vector of 4-byte leads with
         // vector of double continuation bytes (where bytes are the `DOUBLE_CONTINUATION_FLAG`),
         // so 4-byte leads must have the same bits
-        const doubleContinuationFlagVector: @Vector(chunkLowNibbles.len, u8) =
+        const doubleContinuationFlagVector: @Vector(chunkLen, u8) =
             @splat(UTF8_TWO_BYTE_TABLES.DOUBLE_CONTINUATION_FLAG);
 
-        const leadsLowNibbleTable: @Vector(chunkLowNibbles.len, u8) =
+        const leadsLowNibbleTable: @Vector(chunkLen, u8) =
             UTF8_FOUR_BYTE_LEAD_TABLES.LOW_NIBBLE_TABLE & doubleContinuationFlagVector;
-        const leadsHighNibbleTable: @Vector(chunkLowNibbles.len, u8) =
+        const leadsHighNibbleTable: @Vector(chunkLen, u8) =
             UTF8_FOUR_BYTE_LEAD_TABLES.HIGH_NIBBLE_TABLE & doubleContinuationFlagVector;
 
         return simd.aarch64.shuffle128(leadsLowNibbleTable, chunkLowNibbles) &
@@ -554,8 +558,8 @@ pub const aarch64 = struct {
     pub inline fn isVectorAscii128(vector: @Vector(16, u8)) bool {
         // All ASCII chars have the highest bit set to 0,
         // so bytes that became zero in `vector` after AND with this mask are ASCII chars
-        const nonAsciiCharMasks: @Vector(vector.len, u8) = @splat(0b10000000);
+        const nonAsciiCharMaskVector: @Vector(vector.len, u8) = @splat(0b10000000);
 
-        return simd.aarch64.eqlToBits128(vector & nonAsciiCharMasks, nonAsciiCharMasks) == 0;
+        return simd.aarch64.eqlWhole128(vector & nonAsciiCharMaskVector, @splat(0));
     }
 };

@@ -13,8 +13,6 @@ const CPU = builtin.cpu;
 
 pub const x86 = struct {
     const VPTERNLOG_AND_OPERATION = 0x80;
-    // TODO: check avx2 penalty because of 128-bit registers in every `util128`
-
     /// Returns 16, 32, 64 or `null` in case of lack of SIMD.
     ///
     /// Returns 64 only if the target is `avx512bw` (which supports 64-byte vector shuffles).
@@ -235,7 +233,6 @@ pub const x86 = struct {
     /// Returns a bit mask, where 1 is at indexes,
     /// at which `vector` has bytes with high-bit 1.
     inline fn vectorToBits128(vector: @Vector(16, u8)) u32 {
-        // TODO: check avx2 penalty because of 128-bit registers
         return asm ("pmovmskb %[vector], %[result]"
             : [result] "=r" (-> u64),
             : [vector] "v" (vector),
@@ -354,8 +351,6 @@ pub const aarch64 = struct {
         );
     }
 
-    // TODO: whole equal to bits
-
     /// Returns a bit mask, where 1 is at indexes,
     /// at which `vector` has bytes with high bit 1.
     inline fn vectorToBits128(vector: @Vector(16, u8)) u64 {
@@ -371,7 +366,6 @@ pub const aarch64 = struct {
                 mask = 1 << index;
 
                 lowHalf.* = mask;
-
                 highHalf.* = mask;
             }
 
@@ -386,10 +380,11 @@ pub const aarch64 = struct {
         const lowHalfVector: @Vector(8, u8) = singleBitsVector[0..8].*;
         const highHalfVector: @Vector(8, u8) = singleBitsVector[8..].*;
 
+        // NEON (128-bit vectors) lacks of reducing OR operation.
+        // But ADD can be used:
         // Every byte has only one unique bit set to 1,
-        // so `Add` accross all elements is the same
-        // as `Or` accross the elements:
-        // `0001` + `0010` = `0011` = `0001` | `0010`
+        // so ADD across all elements is identical to OR across the elements:
+        // 0001 + 0010 = 0011 = 0001 | 0010
         const lowHalfMask: u64 = @reduce(.Add, lowHalfVector);
         const highHalfMask: u64 = @reduce(.Add, highHalfVector);
 
@@ -418,7 +413,6 @@ pub inline fn mulCarryless(a: u64, b: u64) u64 {
                 : [b] "+v" (bVector),
                 : [a] "v" (aVector),
             );
-
             return bVector[0];
         },
 
