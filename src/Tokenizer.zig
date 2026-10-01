@@ -213,7 +213,6 @@ pub fn next(self: *Tokenizer) usize {
             const chunk: @Vector(shuffleLen, u8) = source[0..shuffleLen].*;
 
             if (chunk.len > source.len) break :simd;
-
             // TODO: low nibbles may not be needed if only 8 or 16 nibbles are indexes
             const chunkLowNibbles = simd.getLowNibbles(chunk);
             const chunkHighNibbles = simd.getHighNibbles(chunk);
@@ -269,7 +268,6 @@ pub fn next(self: *Tokenizer) usize {
                         chunkLowNibbles ++ chunkHighNibbles,
                     );
 
-                    // TODO: avx2 penalty because of 128-bit registers
                     const firstHalfMatch: @Vector(16, u8) = nibblesMatchHalves[0..16];
                     const secondHalfMatch: @Vector(16, u8) = nibblesMatchHalves[16..];
 
@@ -346,8 +344,14 @@ pub fn next(self: *Tokenizer) usize {
 
                 const chunk: @Vector(maxVectorLen, u8) = source[0..maxVectorLen].*;
 
-                const validateEncodingResult = encoding.aarch64.validateEncoding();
+                const chunkLowNibbles = simd.getLowNibbles(chunk);
+                const chunkHighNibbles = simd.getLowNibbles(chunk);
 
+                const validateEncodingResult = encoding.aarch64.vaildateEncoding128(
+                    chunk,
+                    chunkHighNibbles,
+                    self.encodingContext,
+                );
                 if (!validateEncodingResult.isValid)
                     return NEXT_UTF8_ERROR;
 
@@ -357,19 +361,10 @@ pub fn next(self: *Tokenizer) usize {
                     simd.expandVector(JSON_CHAR_TABLES.HIGH_NIBBLE_TABLE, chunk.len);
 
                 const anyControlCharsMask, const anyWhitespacesMask = block: {
-                    const lowNibbles = simd.getLowNibbles(chunk);
-                    const highNibbles = simd.getLowNibbles(chunk);
+                    const charsMatch =
+                        simd.aarch64.shuffle128(jsonCharLowNibbleTable, chunkLowNibbles) &
+                        simd.aarch64.shuffle128(jsonCharHighNibbleTable, chunkHighNibbles);
 
-                    const lowNibblesMatch = simd.aarch64.shuffle128(
-                        lowNibbles,
-                        jsonCharLowNibbleTable,
-                    );
-                    const highNibblesMatch = simd.aarch64.shuffle128(
-                        highNibbles,
-                        jsonCharHighNibbleTable,
-                    );
-
-                    const charsMatch = lowNibblesMatch & highNibblesMatch;
                     break :block .{
                         simd.aarch64.notEqlToBits128(
                             charsMatch & JSON_CHAR_TABLES.CONTROL_CHARS_FLAG,
@@ -401,6 +396,7 @@ pub fn next(self: *Tokenizer) usize {
                 );
 
                 self.stringContext = newStringContext;
+                self.encodingContext = validateEncodingResult.newEncodingContext;
 
                 if (jsonCharsMask != 0) {
                     const charIndex = utils.countTrailZeros(jsonCharsMask);
