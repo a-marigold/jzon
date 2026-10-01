@@ -241,7 +241,7 @@ pub const x86 = struct {
 };
 
 pub const aarch64 = struct {
-    /// Returns 0 if the length of vector registers is scalable (`sve2`).
+    /// Returns 0 if the length of vector registers is scalable (SVE2).
     ///
     /// Returns 16 in case of `neon` extension support.
     ///
@@ -323,7 +323,7 @@ pub const aarch64 = struct {
               [b] "w" (b),
         );
 
-        return isEqual == 0b11111111;
+        return isEqual == 0b11111111; // `cmeq` fills equal bytes with 11111111
     }
 
     /// Shifts bytes of `vector` to the right,

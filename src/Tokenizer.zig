@@ -199,217 +199,216 @@ pub fn next(self: *Tokenizer) usize {
 
     simd: switch (comptime CPU.arch) {
         .x86_64 => if (comptime simd.x86.getMaxVectorLen()) |maxVectorLen| {
-            const prevJsonCharsMask = self.prevJsonCharsMask;
-            if (prevJsonCharsMask != 0) {
-                const charIndex = utils.countTrailZeros(prevJsonCharsMask);
-                self.prevJsonCharsMask = utils.omitTrailBit(prevJsonCharsMask);
-                return charIndex;
-            }
-
             // AVX2 (maxVectorLen == 32) has a specific shuffle vector instruction
             // which uses not all 32 but only 16 bytes of a SIMD chunk
-            const shuffleLen = if (maxVectorLen == 32) 16 else maxVectorLen;
+            const shuffleLen = comptime if (maxVectorLen == 32) 16 else maxVectorLen;
 
-            const chunk: @Vector(shuffleLen, u8) = source[0..shuffleLen].*;
+            if (comptime shuffleLen < source.len) break :simd;
 
-            if (chunk.len > source.len) break :simd;
-            // TODO: low nibbles may not be needed if only 8 or 16 nibbles are indexes
-            const chunkLowNibbles = simd.getLowNibbles(chunk);
-            const chunkHighNibbles = simd.getHighNibbles(chunk);
-
-            const validateEncodingResult = encoding.x86.validateEncoding(
-                chunk,
-                chunkHighNibbles,
-                self.encodingContext,
-                maxVectorLen,
-            );
-
-            if (!validateEncodingResult.isValid) return NEXT_UTF8_ERROR;
-            // TODO: check in ASM output if LLVM doesn't move tables initialization from loop
-
-            const jsonCharLowNibbleTable: @Vector(chunk.len, u8) = comptime block: {
-                const tableArray = JSON_CHAR_TABLES.LOW_NIBBLE_TABLE;
-                const tableVector: @Vector(tableArray.len, u8) = tableArray;
-
-                break :block simd.expandVector(tableVector, chunk.len);
-            };
-
-            const jsonCharHighNibbleTable: @Vector(chunk.len, u8) = comptime block: {
-                const tableArray = JSON_CHAR_TABLES.HIGH_NIBBLE_TABLE;
-                const tableVector: @Vector(tableArray.len, u8) = tableArray;
-
-                break :block simd.expandVector(tableVector, chunk.len);
-            };
-
-            const eqlToBits, const notEqlToBits = comptime switch (maxVectorLen) {
-                16, 32 => .{ simd.x86.eqlToBits128, simd.x86.notEqlToBits128 },
-                64 => .{ simd.x86.eqlToBits512, simd.x86.notEqlToBits512 },
-                else => unreachable,
-            };
-
-            const anyControlCharsMask: u64, const anyWhitespacesMask: u64 = block: switch (comptime maxVectorLen) {
-                16 => {
-                    const lowNibblesMatch =
-                        simd.x86.shuffle128(jsonCharLowNibbleTable, chunkLowNibbles);
-                    const highNibblesMatch =
-                        simd.x86.shuffle128(jsonCharHighNibbleTable, chunkHighNibbles);
-
-                    const charsMatch = lowNibblesMatch & highNibblesMatch;
-
-                    break :block .{
-                        notEqlToBits(charsMatch & JSON_CHAR_TABLES.CONTROL_CHARS_FLAG, @splat(0)),
-                        notEqlToBits(charsMatch & JSON_CHAR_TABLES.WHITESPACE_FLAG, @splat(0)),
-                    };
-                },
-                32 => {
-                    // TODO: AVX2 actually can do classification in 2 instructions
-                    const nibblesMatchHalves = simd.x86.shuffle256(
-                        jsonCharLowNibbleTable ++ jsonCharHighNibbleTable,
-                        chunkLowNibbles ++ chunkHighNibbles,
-                    );
-
-                    const firstHalfMatch: @Vector(16, u8) = nibblesMatchHalves[0..16];
-                    const secondHalfMatch: @Vector(16, u8) = nibblesMatchHalves[16..];
-
-                    const charsMatch = firstHalfMatch & secondHalfMatch;
-
-                    break :block .{
-                        notEqlToBits(charsMatch & JSON_CHAR_TABLES.CONTROL_CHARS_FLAG, @splat(0)),
-                        notEqlToBits(charsMatch & JSON_CHAR_TABLES.WHITESPACE_FLAG, @splat(0)),
-                    };
-                },
-                64 => {
-                    const lowNibblesMatch =
-                        simd.x86.shuffle512(jsonCharLowNibbleTable, chunkLowNibbles);
-                    const highNibblesMatch =
-                        simd.x86.shuffle512(jsonCharHighNibbleTable, chunkHighNibbles);
-
-                    const charsMatch = lowNibblesMatch & highNibblesMatch;
-
-                    break :block .{
-                        simd.x86.andToBits512(
-                            charsMatch,
-                            @splat(JSON_CHAR_TABLES.CONTROL_CHARS_FLAG),
-                        ),
-                        simd.x86.andToBits512(
-                            charsMatch,
-                            @splat(JSON_CHAR_TABLES.WHITESPACE_FLAG),
-                        ),
-                    };
-                },
-                else => unreachable,
-            };
-
-            const stringsMask, const newStringContext = block: {
-                const anyQuotesMask: u64 = eqlToBits(chunk, @splat('"'));
-                const backslashMask: u64 = eqlToBits(chunk, @splat('\\'));
-
-                const result = getStringsMask(
-                    anyQuotesMask,
-                    backslashMask,
-                    self.stringContext,
-                );
-
-                break :block .{ result.stringsMask, result.newStringContext };
-            };
-
-            self.stringContext = newStringContext;
-            self.encodingContext = validateEncodingResult.newEncodingContext;
-
-            const jsonCharsMask = getJsonCharsMask(
-                anyControlCharsMask,
-                anyWhitespacesMask,
-                stringsMask,
-            );
-
-            if (jsonCharsMask != 0) {
-                const charIndex = utils.countTrailZeros(jsonCharsMask);
-                self.prevJsonCharsMask = utils.omitTrailBit(jsonCharsMask);
-                return charIndex;
-            } else return NEXT_TRIVIA;
+            const chunk: @Vector(shuffleLen, u8) = source[0..16].*;
+            return x86.nextSimd(self, chunk, maxVectorLen);
         },
         .aarch64 => switch (simd.aarch64.getMaxVectorLen()) {
             null => break :simd,
-            16 => {
-                const maxVectorLen = 16;
 
-                if (maxVectorLen > source.len) break :simd;
+            16 => return aarch64.nextSimd128(self, source[0..16].*),
 
-                const prevJsonCharsMask = self.prevJsonCharsMask;
-                if (prevJsonCharsMask != 0) {
-                    const charIndex = utils.countTrailZeros(prevJsonCharsMask);
-                    self.prevJsonCharsMask = utils.omitTrailBit(prevJsonCharsMask);
-                    return charIndex;
-                }
-
-                const chunk: @Vector(maxVectorLen, u8) = source[0..maxVectorLen].*;
-
-                const chunkLowNibbles = simd.getLowNibbles(chunk);
-                const chunkHighNibbles = simd.getLowNibbles(chunk);
-
-                const validateEncodingResult = encoding.aarch64.vaildateEncoding128(
-                    chunk,
-                    chunkHighNibbles,
-                    self.encodingContext,
-                );
-                if (!validateEncodingResult.isValid)
-                    return NEXT_UTF8_ERROR;
-
-                const jsonCharLowNibbleTable: @Vector(chunk.len, u8) =
-                    JSON_CHAR_TABLES.LOW_NIBBLE_TABLE;
-                const jsonCharHighNibbleTable =
-                    simd.expandVector(JSON_CHAR_TABLES.HIGH_NIBBLE_TABLE, chunk.len);
-
-                const anyControlCharsMask, const anyWhitespacesMask = block: {
-                    const charsMatch =
-                        simd.aarch64.shuffle128(jsonCharLowNibbleTable, chunkLowNibbles) &
-                        simd.aarch64.shuffle128(jsonCharHighNibbleTable, chunkHighNibbles);
-
-                    break :block .{
-                        simd.aarch64.notEqlToBits128(
-                            charsMatch & JSON_CHAR_TABLES.CONTROL_CHARS_FLAG,
-                            @splat(0),
-                        ),
-                        simd.aarch64.notEqlToBits128(
-                            charsMatch & JSON_CHAR_TABLES.WHITESPACE_FLAG,
-                            @splat(0),
-                        ),
-                    };
-                };
-
-                const stringsMask, const newStringContext = block: {
-                    const anyQuotesMask = simd.aarch64.eqlToBits128(chunk, @splat('"'));
-                    const backslashMask = simd.aarch64.eqlToBits128(chunk, @splat('\\'));
-
-                    const result = getStringsMask(
-                        anyQuotesMask,
-                        backslashMask,
-                        self.stringContext,
-                    );
-                    break :block .{ result.stringsMask, result.newStringContext };
-                };
-
-                const jsonCharsMask = getJsonCharsMask(
-                    anyControlCharsMask,
-                    anyWhitespacesMask,
-                    stringsMask,
-                );
-
-                self.stringContext = newStringContext;
-                self.encodingContext = validateEncodingResult.newEncodingContext;
-
-                if (jsonCharsMask != 0) {
-                    const charIndex = utils.countTrailZeros(jsonCharsMask);
-                    self.prevJsonCharsMask = utils.omitTrailBit(jsonCharsMask);
-                    return charIndex;
-                } else return NEXT_TRIVIA;
-            },
-
-            // Scalable vector length (sve2)
+            // Scalable vector length (SVE2)
             0 => {},
         },
     }
 }
+
+const x86 = struct {
+    fn nextSimd(self: *Tokenizer, chunk: anytype, comptime maxVectorLen: comptime_int) NextReturnType {
+        const prevJsonCharsMask = self.prevJsonCharsMask;
+        if (prevJsonCharsMask != 0) {
+            const charIndex = utils.countTrailZeros(prevJsonCharsMask);
+            self.prevJsonCharsMask = utils.omitTrailBit(prevJsonCharsMask);
+            return charIndex;
+        }
+
+        // TODO: low nibbles may not be needed if only 8 or 16 nibbles are indexes
+        const chunkLowNibbles = simd.getLowNibbles(chunk);
+        const chunkHighNibbles = simd.getHighNibbles(chunk);
+
+        const validateEncodingResult = encoding.x86.validateEncoding(
+            chunk,
+            chunkHighNibbles,
+            self.encodingContext,
+            maxVectorLen,
+        );
+
+        if (!validateEncodingResult.isValid) return NEXT_UTF8_ERROR;
+        // TODO: check in ASM output if LLVM doesn't move tables initialization from loop
+
+        const jsonCharLowNibbleTable: @Vector(chunk.len, u8) = comptime block: {
+            const tableArray = JSON_CHAR_TABLES.LOW_NIBBLE_TABLE;
+            const tableVector: @Vector(tableArray.len, u8) = tableArray;
+
+            break :block simd.expandVector(tableVector, chunk.len);
+        };
+
+        const jsonCharHighNibbleTable: @Vector(chunk.len, u8) = comptime block: {
+            const tableArray = JSON_CHAR_TABLES.HIGH_NIBBLE_TABLE;
+            const tableVector: @Vector(tableArray.len, u8) = tableArray;
+
+            break :block simd.expandVector(tableVector, chunk.len);
+        };
+
+        const eqlToBits, const notEqlToBits = comptime switch (maxVectorLen) {
+            16, 32 => .{ simd.x86.eqlToBits128, simd.x86.notEqlToBits128 },
+            64 => .{ simd.x86.eqlToBits512, simd.x86.notEqlToBits512 },
+            else => unreachable,
+        };
+
+        const anyControlCharsMask: u64, const anyWhitespacesMask: u64 = block: switch (comptime maxVectorLen) {
+            16 => {
+                const lowNibblesMatch =
+                    simd.x86.shuffle128(jsonCharLowNibbleTable, chunkLowNibbles);
+                const highNibblesMatch =
+                    simd.x86.shuffle128(jsonCharHighNibbleTable, chunkHighNibbles);
+
+                const charsMatch = lowNibblesMatch & highNibblesMatch;
+
+                break :block .{
+                    notEqlToBits(charsMatch & JSON_CHAR_TABLES.CONTROL_CHARS_FLAG, @splat(0)),
+                    notEqlToBits(charsMatch & JSON_CHAR_TABLES.WHITESPACE_FLAG, @splat(0)),
+                };
+            },
+            32 => {
+                // TODO: AVX2 actually can do classification in 2 instructions
+                const nibblesMatchHalves = simd.x86.shuffle256(
+                    jsonCharLowNibbleTable ++ jsonCharHighNibbleTable,
+                    chunkLowNibbles ++ chunkHighNibbles,
+                );
+
+                const firstHalfMatch: @Vector(16, u8) = nibblesMatchHalves[0..16];
+                const secondHalfMatch: @Vector(16, u8) = nibblesMatchHalves[16..];
+
+                const charsMatch = firstHalfMatch & secondHalfMatch;
+
+                break :block .{
+                    notEqlToBits(charsMatch & JSON_CHAR_TABLES.CONTROL_CHARS_FLAG, @splat(0)),
+                    notEqlToBits(charsMatch & JSON_CHAR_TABLES.WHITESPACE_FLAG, @splat(0)),
+                };
+            },
+            64 => {
+                const lowNibblesMatch =
+                    simd.x86.shuffle512(jsonCharLowNibbleTable, chunkLowNibbles);
+                const highNibblesMatch =
+                    simd.x86.shuffle512(jsonCharHighNibbleTable, chunkHighNibbles);
+
+                const charsMatch = lowNibblesMatch & highNibblesMatch;
+
+                break :block .{
+                    simd.x86.andToBits512(
+                        charsMatch,
+                        @splat(JSON_CHAR_TABLES.CONTROL_CHARS_FLAG),
+                    ),
+                    simd.x86.andToBits512(
+                        charsMatch,
+                        @splat(JSON_CHAR_TABLES.WHITESPACE_FLAG),
+                    ),
+                };
+            },
+            else => unreachable,
+        };
+
+        const stringsMask, const newStringContext = block: {
+            const anyQuotesMask: u64 = eqlToBits(chunk, @splat('"'));
+            const backslashMask: u64 = eqlToBits(chunk, @splat('\\'));
+
+            const result = getStringsMask(
+                anyQuotesMask,
+                backslashMask,
+                self.stringContext,
+            );
+
+            break :block .{ result.stringsMask, result.newStringContext };
+        };
+
+        self.stringContext = newStringContext;
+        self.encodingContext = validateEncodingResult.newEncodingContext;
+
+        const jsonCharsMask = getJsonCharsMask(
+            anyControlCharsMask,
+            anyWhitespacesMask,
+            stringsMask,
+        );
+
+        if (jsonCharsMask != 0) {
+            const charIndex = utils.countTrailZeros(jsonCharsMask);
+            self.prevJsonCharsMask = utils.omitTrailBit(jsonCharsMask);
+            return charIndex;
+        } else return NEXT_TRIVIA;
+    }
+};
+
+const aarch64 = struct {
+    pub fn nextSimd128(self: *Tokenizer, chunk: @Vector(16, u8)) NextReturnType {
+        const prevJsonCharsMask = self.prevJsonCharsMask;
+        if (prevJsonCharsMask != 0) {
+            const charIndex = utils.countTrailZeros(prevJsonCharsMask);
+            self.prevJsonCharsMask = utils.omitTrailBit(prevJsonCharsMask);
+            return charIndex;
+        }
+
+        const chunkLowNibbles = simd.getLowNibbles(chunk);
+        const chunkHighNibbles = simd.getLowNibbles(chunk);
+
+        const validateEncodingResult = encoding.aarch64.vaildateEncoding128(
+            chunk,
+            chunkHighNibbles,
+            self.encodingContext,
+        );
+        if (!validateEncodingResult.isValid)
+            return NEXT_UTF8_ERROR;
+
+        const jsonCharLowNibbleTable: @Vector(chunk.len, u8) =
+            JSON_CHAR_TABLES.LOW_NIBBLE_TABLE;
+        const jsonCharHighNibbleTable =
+            simd.expandVector(JSON_CHAR_TABLES.HIGH_NIBBLE_TABLE, chunk.len);
+
+        const anyControlCharsMask, const anyWhitespacesMask = block: {
+            const charsMatch =
+                simd.aarch64.shuffle128(jsonCharLowNibbleTable, chunkLowNibbles) &
+                simd.aarch64.shuffle128(jsonCharHighNibbleTable, chunkHighNibbles);
+
+            break :block .{
+                simd.aarch64.notEqlToBits128(charsMatch & JSON_CHAR_TABLES.CONTROL_CHARS_FLAG, @splat(0)),
+                simd.aarch64.notEqlToBits128(charsMatch & JSON_CHAR_TABLES.WHITESPACE_FLAG, @splat(0)),
+            };
+        };
+
+        const stringsMask, const newStringContext = block: {
+            const anyQuotesMask = simd.aarch64.eqlToBits128(chunk, @splat('"'));
+            const backslashMask = simd.aarch64.eqlToBits128(chunk, @splat('\\'));
+
+            const result = getStringsMask(
+                anyQuotesMask,
+                backslashMask,
+                self.stringContext,
+            );
+            break :block .{ result.stringsMask, result.newStringContext };
+        };
+
+        const jsonCharsMask = getJsonCharsMask(
+            anyControlCharsMask,
+            anyWhitespacesMask,
+            stringsMask,
+        );
+
+        self.stringContext = newStringContext;
+        self.encodingContext = validateEncodingResult.newEncodingContext;
+
+        if (jsonCharsMask != 0) {
+            const charIndex = utils.countTrailZeros(jsonCharsMask);
+            self.prevJsonCharsMask = utils.omitTrailBit(jsonCharsMask);
+            return charIndex;
+        } else return NEXT_TRIVIA;
+    }
+};
 
 /// Returns a mask where bits of control chars and starts of JSON values are set to 1.
 ///
